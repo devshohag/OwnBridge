@@ -16,11 +16,53 @@
 
     <StackPanel Grid.Row="0" Margin="0,0,0,10" Background="#1E293B">
       <TextBlock Text="OwnBridge" FontSize="17" FontWeight="SemiBold" Foreground="White" />
-      <TextBlock Text="Phase 3 · ChatGPT" Foreground="White" Opacity="0.8" />
+      <TextBlock Text="{Binding HeaderText}" Foreground="White" Opacity="0.8" />
+      <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+        <TextBlock Text="AI:" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+        <RadioButton GroupName="OwnBridgeProvider" Content="ChatGPT" Foreground="White" Margin="0,0,12,0"
+                     IsChecked="{Binding IsChatGpt, Mode=TwoWay}" />
+        <RadioButton GroupName="OwnBridgeProvider" Content="Gemini" Foreground="White"
+                     IsChecked="{Binding IsGemini, Mode=TwoWay}" />
+      </StackPanel>
       <TextBlock Text="{Binding WorkspaceText}" Foreground="White" Opacity="0.8" TextWrapping="Wrap" />
+      <TextBlock Text="{Binding AccountText}" Foreground="White" Opacity="0.9" TextWrapping="Wrap" />
+      <TextBlock Text="{Binding UsageText}" Foreground="White" Opacity="0.8" TextWrapping="Wrap" />
       <TextBlock Text="{Binding Status}" Foreground="White" TextWrapping="Wrap" Margin="0,4,0,4" />
-      <Button Content="Connect ChatGPT" HorizontalAlignment="Left" Padding="8,4"
-              Command="{Binding ConnectCommand}" />
+      <StackPanel Orientation="Horizontal">
+        <Button Content="{Binding ConnectLabel}" Padding="8,4" Margin="0,0,8,0"
+                Command="{Binding ConnectCommand}" />
+        <Button Content="New chat" Padding="8,4" Margin="0,0,8,0" Command="{Binding NewChatCommand}" />
+        <Button Content="History" Padding="8,4" Command="{Binding ToggleHistoryCommand}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                  Visibility="{Binding IsGemini, Converter={StaticResource BoolToVisibility}}">
+        <TextBlock Text="Gemini API key:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" />
+        <TextBox Text="{Binding GeminiKeyInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MinWidth="240" Margin="0,0,8,0" />
+        <Button Content="Save key" Padding="8,2" Margin="0,0,8,0" Command="{Binding SaveGeminiKeyCommand}" />
+        <Button Content="Remove key" Padding="8,2" Command="{Binding RemoveGeminiKeyCommand}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                  Visibility="{Binding IsGemini, Converter={StaticResource BoolToVisibility}}">
+        <TextBlock Text="Gemini model:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" />
+        <TextBox Text="{Binding GeminiModelInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MinWidth="240" Margin="0,0,8,0" />
+        <Button Content="Set model" Padding="8,2" Command="{Binding SetGeminiModelCommand}" />
+      </StackPanel>
+      <Border Margin="0,6,0,0" Padding="6" Background="#0F172A"
+              Visibility="{Binding ShowHistory, Converter={StaticResource BoolToVisibility}}">
+        <StackPanel>
+          <TextBlock Text="Chats in this solution" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4" />
+          <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding History}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Button Content="{Binding Title}" Command="{Binding OpenCommand}"
+                          HorizontalContentAlignment="Left" Padding="6,2" Margin="0,1" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </StackPanel>
+      </Border>
     </StackPanel>
 
     <TextBox Grid.Row="1" Text="{Binding Transcript, Mode=OneWay}"

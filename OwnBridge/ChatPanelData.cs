@@ -10,15 +10,26 @@ namespace OwnBridge;
 internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
 {
     private readonly VisualStudioExtensibility extensibility;
-    private readonly IChatProvider provider = new CodexChatProvider();
-    private readonly ConversationSession session = new();
+    private readonly CodexChatProvider chatGpt = new();
+    private readonly GeminiChatProvider gemini = new();
+    private IChatProvider? runningProvider;
+    private CancellationTokenSource? turnCancel;
+    private bool isChatGpt = true;
+    private bool isGemini;
+    private string connectLabel = "Connect ChatGPT";
+    private string headerText = "Phase 5 · ChatGPT";
+    private ConversationSession? session;
+    private string accountText = "Account: checking...";
+    private string usageText = string.Empty;
+    private bool showHistory;
+    private string geminiKeyInput = string.Empty;
+    private string geminiModelInput = Settings.GeminiModel;
     private readonly SemaphoreSlim approvalGate = new(1, 1);
     private TaskCompletionSource<bool>? pendingApproval;
     private string? pendingDiff;
-    private string? lastWorkspaceRoot;
 
     private string prompt = string.Empty;
-    private string transcript = "OwnBridge — Phase 3\n\nOpen a file from your solution, then ask ChatGPT about it or ask it to change code.";
+    private string transcript = "OwnBridge — Phase 5\n\nChoose ChatGPT or Gemini, open a file from your solution, then ask about it or ask for a code change. Each solution keeps its own chat history.";
     private string status = "Checking connection...";
     private string workspaceText = "Workspace: open a file from your solution";
     private bool includeEditorContext = true;
@@ -32,14 +43,17 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     public ChatPanelData(VisualStudioExtensibility extensibility)
     {
         this.extensibility = extensibility;
+        chatGpt.Progress = update => Status = update;
+        gemini.Progress = update => Status = update;
 
         ConnectCommand = new AsyncCommand(async (_, cancellationToken) =>
         {
             if (busy) return;
             Busy = true;
+            var provider = SelectedProvider;
             try
             {
-                Status = "Checking ChatGPT sign-in...";
+                Status = $"Checking {provider.DisplayName} sign-in...";
                 Status = await provider.ConnectAsync(update => Status = update, cancellationToken);
             }
             catch (Exception ex)
@@ -48,8 +62,9 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             }
             finally
             {
-                Transcript = session.RenderTranscript() + $"\n\nOwnBridge: {Status}";
+                Transcript = (session?.RenderTranscript() ?? "OwnBridge — Phase 5") + $"\n\nOwnBridge: {Status}";
                 Busy = false;
+                _ = RefreshInfoAsync();
             }
         });
 
@@ -60,42 +75,61 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             if (string.IsNullOrWhiteSpace(message)) return;
 
             Busy = true;
+            var provider = SelectedProvider;
             try
             {
                 var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
-                var root = ResolveWorkspaceRoot(editor);
-                if (root is null)
+                var current = EnsureSession(editor);
+                if (current is null)
                 {
                     Status = "Open any file from your solution in the editor, then press Send again.";
                     return;
                 }
+                var root = current.Workspace.Root;
 
-                session.Add("user", provider.ProviderId, message);
+                // Handoff: whatever happened in this conversation since this AI last answered.
+                var handoff = current.BuildHandoff(provider.ProviderId);
+                var activeFile = editor is null ? null : Path.GetRelativePath(root, editor.FilePath);
+                current.Add("user", provider.ProviderId, message, activeFile);
                 Prompt = string.Empty;
-                var view = new TurnView(this, session.RenderTranscript());
+                var view = new TurnView(this, current.RenderTranscript(), provider.DisplayName);
+                runningProvider = provider;
+                turnCancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 IsRunning = true;
                 Status = "Working... (Stop cancels this reply)";
 
                 try
                 {
-                    var request = new ChatTurnRequest(message, root, includeEditorContext ? editor : null);
-                    var answer = await provider.SendAsync(session, request, view, cancellationToken);
-                    session.Add("assistant", provider.ProviderId, view.WithActivity(answer));
-                    Transcript = session.RenderTranscript();
-                    Status = "Connected to ChatGPT";
+                    var request = new ChatTurnRequest(message, root, includeEditorContext ? editor : null, handoff);
+                    var answer = await provider.SendAsync(current, request, view, turnCancel.Token);
+                    current.Add("assistant", provider.ProviderId, view.WithActivity(answer));
+                    current.MarkSeen(provider.ProviderId);
+                    Transcript = current.RenderTranscript();
+                    Status = $"Connected to {provider.DisplayName}";
+                }
+                catch (OperationCanceledException)
+                {
+                    current.Add("assistant", provider.ProviderId, view.WithActivity("(Stopped.)"));
+                    Transcript = current.RenderTranscript();
+                    Status = "Stopped.";
                 }
                 catch (Exception ex)
                 {
-                    session.Add("assistant", provider.ProviderId, view.WithActivity($"[OwnBridge error] {ex.Message}"));
-                    Transcript = session.RenderTranscript();
+                    current.Add("assistant", provider.ProviderId, view.WithActivity($"[OwnBridge error] {ex.Message}"));
+                    Transcript = current.RenderTranscript();
                     Status = "Could not complete the message. Your prompt is still in this chat.";
                 }
             }
             finally
             {
                 ClearApproval(approved: false);
+                runningProvider = null;
+                turnCancel?.Dispose();
+                turnCancel = null;
                 IsRunning = false;
                 Busy = false;
+                RefreshHistory();
+                _ = RefreshInfoAsync();
             }
         });
 
@@ -104,8 +138,11 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             if (!isRunning) return;
             ClearApproval(approved: false);
             Status = "Stopping...";
-            try { await provider.StopAsync(cancellationToken); }
-            catch (Exception ex) { Status = $"Could not stop: {ex.Message}"; }
+            try { if (runningProvider is { } active) await active.StopAsync(cancellationToken); }
+            catch (Exception ex) { Status = $"Could not stop cleanly: {ex.Message}"; }
+            // Give the engine a moment to finish on its own, then cancel the wait in OwnBridge.
+            await Task.Delay(TimeSpan.FromSeconds(3), CancellationToken.None);
+            try { turnCancel?.Cancel(); } catch (ObjectDisposedException) { }
         });
 
         ApproveCommand = new AsyncCommand((_, _) => { ClearApproval(approved: true); return Task.CompletedTask; });
@@ -129,25 +166,167 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             }
         });
 
-        _ = CheckConnectionAsync();
-    }
-
-    private string? ResolveWorkspaceRoot(EditorContext? editor)
-    {
-        if (editor is not null)
+        NewChatCommand = new AsyncCommand((_, _) =>
         {
+            if (busy) return Task.CompletedTask;
+            if (session is null)
+            {
+                Status = "Open a file from your solution first; the new chat belongs to that solution.";
+                return Task.CompletedTask;
+            }
+            var workspace = session.Workspace;
+            session.Dispose();
+            session = ConversationSession.CreateNew(workspace);
+            Transcript = session.RenderTranscript() + "\n\nNew chat started.";
+            ShowHistory = false;
+            RefreshHistory();
+            _ = RefreshInfoAsync();
+            return Task.CompletedTask;
+        });
+
+        ToggleHistoryCommand = new AsyncCommand((_, _) =>
+        {
+            if (session is null)
+            {
+                Status = "Open a file from your solution and send a message; history is kept per solution.";
+                return Task.CompletedTask;
+            }
+            RefreshHistory();
+            ShowHistory = !showHistory;
+            return Task.CompletedTask;
+        });
+
+        SaveGeminiKeyCommand = new AsyncCommand((_, _) =>
+        {
+            var key = geminiKeyInput.Trim();
+            GeminiKeyInput = string.Empty;
+            if (key.Length < 10)
+            {
+                Status = "That does not look like a Gemini API key.";
+                return Task.CompletedTask;
+            }
             try
             {
-                var root = EditorContext.FindWorkspaceRoot(editor.FilePath);
-                if (root is not null) lastWorkspaceRoot = root;
+                gemini.SetApiKey(key);
+                ForgetGeminiSession();
+                Status = $"Saved. Gemini now uses your {gemini.KeyHint()} (encrypted for your Windows user).";
             }
-            catch
+            catch (Exception ex)
             {
-                // Keep the previous root if the folder cannot be read.
+                Status = $"Could not save the key: {ex.Message}";
+            }
+            _ = RefreshInfoAsync();
+            return Task.CompletedTask;
+        });
+
+        SetGeminiModelCommand = new AsyncCommand((_, _) =>
+        {
+            if (busy) return Task.CompletedTask;
+            gemini.SetModel(geminiModelInput);
+            GeminiModelInput = gemini.Model;
+            ForgetGeminiSession();
+            Status = $"Gemini model set to {gemini.Model}.";
+            _ = RefreshInfoAsync();
+            return Task.CompletedTask;
+        });
+
+        RemoveGeminiKeyCommand = new AsyncCommand((_, _) =>
+        {
+            gemini.SetApiKey(null);
+            ForgetGeminiSession();
+            Status = "Gemini API key removed.";
+            _ = RefreshInfoAsync();
+            return Task.CompletedTask;
+        });
+
+        _ = CheckConnectionAsync();
+        _ = RefreshInfoAsync();
+    }
+
+    // The Gemini engine restarted, so its old session id is no longer valid.
+    private void ForgetGeminiSession() => session?.ClearThread("gemini");
+
+    // Finds the workspace for the active file and makes sure the open conversation belongs to it.
+    private ConversationSession? EnsureSession(EditorContext? editor)
+    {
+        string? root = null;
+        if (editor is not null)
+        {
+            try { root = EditorContext.FindWorkspaceRoot(editor.FilePath); }
+            catch { root = null; }
+        }
+
+        if (root is not null)
+        {
+            var workspace = new Workspace(root);
+            if (session is null || session.Workspace.Key != workspace.Key)
+            {
+                session?.Dispose();
+                session = ConversationSession.OpenLatestOrNew(workspace);
+                Transcript = session.RenderTranscript();
+                RefreshHistory();
             }
         }
-        if (lastWorkspaceRoot is not null) WorkspaceText = $"Workspace: {lastWorkspaceRoot}";
-        return lastWorkspaceRoot;
+
+        if (session is not null) WorkspaceText = $"Workspace: {session.Workspace.DisplayName}  ({session.Workspace.Root})";
+        return session;
+    }
+
+    private void RefreshHistory()
+    {
+        History.Clear();
+        if (session is null) return;
+        var workspace = session.Workspace;
+        foreach (var summary in ConversationSummary.List(workspace).Take(30))
+        {
+            var id = summary.Id;
+            var current = id == session.Id ? "  ← current" : "";
+            History.Add(new ConversationItem($"{summary.Updated:dd MMM HH:mm}  {summary.Title}{current}",
+                new AsyncCommand((_, _) =>
+                {
+                    OpenConversation(workspace, id);
+                    return Task.CompletedTask;
+                })));
+        }
+    }
+
+    private void OpenConversation(Workspace workspace, string id)
+    {
+        if (busy) return;
+        if (session?.Id == id)
+        {
+            ShowHistory = false;
+            return;
+        }
+        var opened = ConversationSession.TryOpen(workspace, id);
+        if (opened is null)
+        {
+            Status = "That chat is open in another Visual Studio window. Close it there first.";
+            return;
+        }
+        session?.Dispose();
+        session = opened;
+        Transcript = session.RenderTranscript();
+        ShowHistory = false;
+        RefreshHistory();
+        _ = RefreshInfoAsync();
+    }
+
+    private async Task RefreshInfoAsync()
+    {
+        var provider = (IChatProvider)(isGemini ? gemini : chatGpt);
+        try
+        {
+            var info = await provider.GetInfoAsync(session, CancellationToken.None);
+            if (!ReferenceEquals(provider, SelectedProvider)) return;
+            AccountText = info.Account;
+            UsageText = info.Usage;
+        }
+        catch (Exception ex)
+        {
+            AccountText = $"{provider.DisplayName}: {ex.Message}";
+            UsageText = string.Empty;
+        }
     }
 
     // Called by the provider while a turn waits; shows the card and waits for a button.
@@ -190,16 +369,30 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     private static string Shorten(string text, int max) =>
         text.Length <= max ? text : text[..max] + "\n[... use View diff to see everything]";
 
+    private IChatProvider SelectedProvider => isGemini ? gemini : chatGpt;
+
     private async Task CheckConnectionAsync()
     {
+        var provider = SelectedProvider;
         try
         {
-            Status = await provider.GetStatusAsync(CancellationToken.None);
+            var text = await provider.GetStatusAsync(CancellationToken.None);
+            if (!busy && ReferenceEquals(provider, SelectedProvider)) Status = text;
         }
         catch (Exception ex)
         {
-            Status = $"ChatGPT unavailable: {ex.Message}";
+            if (!busy) Status = $"{provider.DisplayName} unavailable: {ex.Message}";
         }
+    }
+
+    // Switching changes the engine for the next message; a running reply keeps its engine.
+    private void OnProviderChanged()
+    {
+        var name = SelectedProvider.DisplayName;
+        ConnectLabel = $"Connect {name}";
+        HeaderText = $"Phase 5 · {name}";
+        if (!busy) _ = CheckConnectionAsync();
+        _ = RefreshInfoAsync();
     }
 
     // Renders one running turn: earlier transcript, activity lines, then the streaming answer.
@@ -207,13 +400,15 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     {
         private readonly ChatPanelData owner;
         private readonly string prefix;
+        private readonly string speaker;
         private readonly StringBuilder activity = new();
         private string partial = string.Empty;
 
-        public TurnView(ChatPanelData owner, string prefix)
+        public TurnView(ChatPanelData owner, string prefix, string speaker)
         {
             this.owner = owner;
             this.prefix = prefix;
+            this.speaker = speaker;
             Render();
         }
 
@@ -246,7 +441,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         {
             string steps;
             lock (activity) steps = activity.ToString();
-            owner.Transcript = $"{prefix}\n\nChatGPT:{steps}\n{partial}";
+            owner.Transcript = $"{prefix}\n\n{speaker}:{steps}\n{partial}";
         }
     }
 
@@ -270,6 +465,97 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         get => status;
         set => SetProperty(ref status, value);
     }
+
+    [DataMember]
+    public bool IsChatGpt
+    {
+        get => isChatGpt;
+        set
+        {
+            if (value == isChatGpt) return;
+            SetProperty(ref isChatGpt, value);
+            if (value) { IsGemini = false; OnProviderChanged(); }
+        }
+    }
+
+    [DataMember]
+    public bool IsGemini
+    {
+        get => isGemini;
+        set
+        {
+            if (value == isGemini) return;
+            SetProperty(ref isGemini, value);
+            if (value) { IsChatGpt = false; OnProviderChanged(); }
+        }
+    }
+
+    [DataMember]
+    public string ConnectLabel
+    {
+        get => connectLabel;
+        private set => SetProperty(ref connectLabel, value);
+    }
+
+    [DataMember]
+    public string HeaderText
+    {
+        get => headerText;
+        private set => SetProperty(ref headerText, value);
+    }
+
+    [DataMember]
+    public string AccountText
+    {
+        get => accountText;
+        private set => SetProperty(ref accountText, value);
+    }
+
+    [DataMember]
+    public string UsageText
+    {
+        get => usageText;
+        private set => SetProperty(ref usageText, value);
+    }
+
+    [DataMember]
+    public bool ShowHistory
+    {
+        get => showHistory;
+        private set => SetProperty(ref showHistory, value);
+    }
+
+    [DataMember]
+    public string GeminiKeyInput
+    {
+        get => geminiKeyInput;
+        set => SetProperty(ref geminiKeyInput, value);
+    }
+
+    [DataMember]
+    public string GeminiModelInput
+    {
+        get => geminiModelInput;
+        set => SetProperty(ref geminiModelInput, value);
+    }
+
+    [DataMember]
+    public AsyncCommand SetGeminiModelCommand { get; }
+
+    [DataMember]
+    public ObservableList<ConversationItem> History { get; } = new();
+
+    [DataMember]
+    public AsyncCommand NewChatCommand { get; }
+
+    [DataMember]
+    public AsyncCommand ToggleHistoryCommand { get; }
+
+    [DataMember]
+    public AsyncCommand SaveGeminiKeyCommand { get; }
+
+    [DataMember]
+    public AsyncCommand RemoveGeminiKeyCommand { get; }
 
     [DataMember]
     public string WorkspaceText
@@ -348,6 +634,25 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     public void Dispose()
     {
         ClearApproval(approved: false);
-        provider.Dispose();
+        session?.Dispose();
+        chatGpt.Dispose();
+        gemini.Dispose();
     }
+}
+
+// One row in the History list; the row owns its Open command.
+[DataContract]
+internal sealed class ConversationItem
+{
+    public ConversationItem(string title, AsyncCommand openCommand)
+    {
+        Title = title;
+        OpenCommand = openCommand;
+    }
+
+    [DataMember]
+    public string Title { get; private set; }
+
+    [DataMember]
+    public AsyncCommand OpenCommand { get; private set; }
 }

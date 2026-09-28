@@ -7,11 +7,99 @@ namespace OwnBridge;
 
 internal sealed class CodexChatProvider : IChatProvider
 {
-    private readonly CodexAppServerClient client = new();
+    private readonly CodexAppServerClient client;
+    private readonly ConcurrentDictionary<string, long> threadTokens = new(StringComparer.Ordinal);
+    private JsonElement lastRateLimits;
     private volatile string? currentThreadId;
     private volatile string? currentTurnId;
 
     public string ProviderId => "chatgpt";
+
+    public string DisplayName => "ChatGPT";
+
+    public Action<string>? Progress { get; set; }
+
+    public CodexChatProvider()
+    {
+        client = new CodexAppServerClient(ct =>
+            EngineLocator.ResolveAsync("ChatGPT", "codex", "@openai/codex", Progress, ct));
+        client.Notification += OnUsageNotification;
+    }
+
+    // Token and limit updates arrive at any time; keep the latest values.
+    private void OnUsageNotification(string method, JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object) return;
+        if (method == "thread/tokenUsage/updated" && Str(data, "threadId") is { } thread &&
+            data.TryGetProperty("tokenUsage", out var usage) && usage.TryGetProperty("total", out var total) &&
+            Num(total, "totalTokens") is { } tokens)
+        {
+            threadTokens[thread] = (long)tokens;
+        }
+        else if (method == "account/rateLimits/updated" && data.TryGetProperty("rateLimits", out var limits))
+        {
+            lastRateLimits = limits.Clone();
+        }
+    }
+
+    public async Task<ProviderInfo> GetInfoAsync(ConversationSession? session, CancellationToken cancellationToken)
+    {
+        var account = "ChatGPT: not connected";
+        try
+        {
+            var result = await client.RequestAsync("account/read", new { refreshToken = false }, cancellationToken);
+            if (result.TryGetProperty("account", out var info) && info.ValueKind == JsonValueKind.Object)
+            {
+                var type = Str(info, "type");
+                var email = Str(info, "email");
+                var plan = Str(info, "planType");
+                account = type == "chatgpt"
+                    ? $"ChatGPT: {email ?? "signed in"}{(plan is null ? "" : $" ({plan})")}"
+                    : "ChatGPT: API key sign-in (not your subscription)";
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new ProviderInfo("ChatGPT: engine not running", ex.Message);
+        }
+
+        try
+        {
+            var result = await client.RequestAsync("account/rateLimits/read", null, cancellationToken);
+            if (result.TryGetProperty("rateLimits", out var limits)) lastRateLimits = limits.Clone();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Older engines do not answer this request; notifications may still fill it in.
+        }
+
+        var parts = new List<string>();
+        if (session?.ThreadFor("chatgpt") is { } threadId && threadTokens.TryGetValue(threadId, out var used))
+            parts.Add($"This chat: {used:N0} tokens");
+        parts.AddRange(DescribeLimits(lastRateLimits));
+        return new ProviderInfo(account, parts.Count == 0 ? "Usage: shown after the first reply" : string.Join(" · ", parts));
+    }
+
+    private static IEnumerable<string> DescribeLimits(JsonElement limits)
+    {
+        if (limits.ValueKind != JsonValueKind.Object) yield break;
+        foreach (var (name, fallback) in new[] { ("primary", "Short-term limit"), ("secondary", "Weekly limit") })
+        {
+            if (!limits.TryGetProperty(name, out var window) || window.ValueKind != JsonValueKind.Object) continue;
+            if (Num(window, "usedPercent") is not { } percent) continue;
+            var label = Num(window, "windowDurationMins") is { } minutes
+                ? minutes >= 60 * 24 * 6 ? "Weekly limit" : minutes >= 60 ? $"{minutes / 60:0}-hour limit" : $"{minutes:0}-minute limit"
+                : fallback;
+            var reset = Num(window, "resetsAt") is { } unix
+                ? $", resets {DateTimeOffset.FromUnixTimeSeconds((long)unix).ToLocalTime():ddd HH:mm}"
+                : "";
+            yield return $"{label}: {percent:0}% used{reset}";
+        }
+    }
+
+    private static double? Num(JsonElement element, string name) =>
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) ? number : null;
 
     public async Task<string> GetStatusAsync(CancellationToken cancellationToken)
     {
@@ -95,8 +183,8 @@ internal sealed class CodexChatProvider : IChatProvider
         if (await AccountTypeAsync(cancellationToken) != "chatgpt")
             throw new InvalidOperationException("Select Connect ChatGPT and finish sign-in first.");
 
-        // One Codex thread per solution folder, so a different solution gets a clean workspace.
-        var threadKey = $"chatgpt|{request.WorkspaceRoot}";
+        // One Codex thread per OwnBridge conversation (a conversation belongs to one solution).
+        var threadKey = "chatgpt";
         var threadId = session.ThreadFor(threadKey);
         if (threadId is null)
         {
@@ -205,9 +293,7 @@ internal sealed class CodexChatProvider : IChatProvider
             return true;
         }
 
-        var prompt = request.Editor is null
-            ? request.UserText
-            : $"{request.Editor.ToPromptBlock(request.WorkspaceRoot)}\n\nUser request:\n{request.UserText}";
+        var prompt = request.BuildPrompt();
 
         client.Notification += OnNotification;
         client.ServerRequestHandler = OnServerRequest;

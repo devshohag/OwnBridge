@@ -1,10 +1,32 @@
-# OwnBridge — Phase 3
+# OwnBridge — Phase 5
 
 **Your account. Your code. Your IDE.**
 
-OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client locally (`codex app-server`) and lets users work with their own ChatGPT account. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
+OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client (`codex app-server`) and the official Gemini CLI (ACP mode) locally, so users work with their own ChatGPT and Google accounts. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
-## Phase 3 features
+## Phase 5 features
+
+- **History per solution:** conversations are saved as JSON lines under `%LOCALAPPDATA%\OwnBridge\workspaces\<id>\conversations\`. The id is a hash of the solution file path, so two solutions never share history. Opening a file from another solution switches to that solution's latest chat.
+- **Two windows, one solution:** an open conversation holds an exclusive `.lock` file. A second Visual Studio window gets its own conversation and cannot write into the first one's.
+- **New chat / History:** buttons in the header; History lists only this solution's chats.
+- **Handoff:** when you switch AI (or reopen a chat after restarting Visual Studio), the next prompt includes what happened in *this conversation* since that AI last answered (truncated to ~12k characters), with a note to re-read files before editing.
+- **Account and usage:** ChatGPT shows the signed-in email and plan, tokens used in this chat, and the short-term and weekly limit percentages with reset times (when the engine reports them). Gemini shows the key hint or Google email; Gemini CLI does not report remaining limits.
+- **Engines:** OwnBridge uses `codex` / `gemini` from PATH if installed; otherwise it installs a private copy once into `%LOCALAPPDATA%\OwnBridge\engines` with npm (Node.js 20+ required). Engine start failures now show the engine's own error text.
+- **Gemini API key:** Google refuses Gemini CLI sign-in for personal Google accounts, so Gemini can use an API key from Google AI Studio. The key is encrypted with Windows DPAPI for the current Windows user and passed to Gemini CLI as `GEMINI_API_KEY`.
+
+- **0.5.1:** Stop now also cancels a reply that is still starting; Gemini start and session creation time out with a clear message; Gemini traffic is logged to `%LOCALAPPDATA%\OwnBridge\logs\gemini.log` (the API key is never written there); a **Gemini model** box (default `gemini-2.5-flash`, because the free API tier has no quota for Pro models).
+
+Not yet: reading the solution path directly from Visual Studio when no file is open (a file from the solution must be open for the first message).
+
+## Phase 4 features (still included)
+
+- **Gemini:** choose **AI: ChatGPT / Gemini** in the panel header. Gemini runs through the official Gemini CLI in ACP (IDE) mode (`gemini --acp`, falling back to `--experimental-acp` for older CLIs). **Connect Gemini** opens the official Google sign-in when needed.
+- **Gemini approvals:** Gemini's permission requests appear on the same approval card. OwnBridge only ever picks the agent's *allow once* / *reject once* option, never *always*. File edits show the old and new text.
+- **Switching:** the selected AI is used for the next message; a reply that is already running keeps its engine. Each AI keeps its own session per workspace. Carrying the conversation from one AI to the other (handoff) and saved history are Phase 5.
+
+Requires Gemini CLI on `PATH` for development (`npm install -g @google/gemini-cli`, Node.js 20+).
+
+## Phase 3 features (still included)
 
 - **Solution workspace:** the agent works in the folder of the open solution (the nearest folder above the active file that contains a `.sln`/`.slnx`, otherwise the git root). One Codex thread is kept per workspace.
 - **Editor context:** with *Include the open file and selected text* ticked, the active file path and the current selection are sent with the prompt.
@@ -13,7 +35,7 @@ OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the offic
 - **Stop:** interrupts the running reply (`turn/interrupt`); a waiting approval is declined.
 - **Connect ChatGPT:** opens the official browser sign-in and polls the account every 2 seconds until the sign-in is active (up to 5 minutes).
 
-Not in this phase: undo/checkpoints (planned later), Gemini (Phase 4), provider switching with handoff and durable history (Phase 5), managed runtimes (Phase 6). The development build still expects Codex CLI on `PATH` (`npm install -g @openai/codex`).
+Roadmap: Phase 5 handoff and saved history, Phase 6 professional chat UI, Phase 7 managed runtimes and publishing. The development build still expects Codex CLI on `PATH` (`npm install -g @openai/codex`).
 
 ## Build and install (Windows)
 
@@ -43,7 +65,9 @@ Passing `/instanceIds` is required when several Visual Studio instances are inst
 
 - `CodexAppServerClient` — starts `codex app-server`, JSON-RPC over stdio; routes server requests (approvals) to a handler and fails closed.
 - `CodexChatProvider` — sign-in, per-workspace threads, streaming, activity, approval mapping (current `accept/decline` and legacy `approved/denied` shapes), interrupt.
-- `IChatProvider` / `IChatTurnObserver` — provider boundary for later engines (Gemini via ACP).
+- `IChatProvider` / `IChatTurnObserver` — provider boundary shared by both engines.
+- `AcpClient` — JSON-RPC 2.0 over stdio for ACP agents; per-process request tables; refuses unknown agent requests.
+- `GeminiChatProvider` — Google sign-in via `authenticate`, per-workspace sessions, streaming, tool activity, permission mapping, `session/cancel`.
 - `EditorContext` — captures the active file and selection and finds the workspace root.
 - `ChatPanelData` / `ChatPanel.xaml` — Remote UI view model: chat, approval card, stop.
 - `ConversationSession` — OwnBridge-owned transcript and per-provider thread map (in memory).
@@ -51,3 +75,11 @@ Passing `/instanceIds` is required when several Visual Studio instances are inst
 ## License and affiliation
 
 MIT; see [LICENSE](LICENSE). OwnBridge is an independent community project, not an official Microsoft, OpenAI or Google extension.
+
+## Test Gemini (Phase 4)
+
+1. `npm install -g @google/gemini-cli`, then restart Visual Studio.
+2. In OwnBridge select **Gemini** → **Connect Gemini** → finish Google sign-in in the browser → status shows *Connected to Gemini*.
+3. With a method selected: `Explain the selected code.`
+4. `Add an XML doc comment to the selected method.` → approval card → Decline once, then Approve.
+5. Switch back to **ChatGPT** and send a message; both keep working in the same panel.

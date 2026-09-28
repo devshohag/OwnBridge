@@ -8,6 +8,8 @@ namespace OwnBridge;
 // OwnBridge talks to its documented JSONL app-server protocol over stdio.
 internal sealed class CodexAppServerClient : IDisposable
 {
+    private readonly Func<CancellationToken, Task<string>> resolveExecutable;
+    private readonly StderrTail stderr = new();
     private readonly SemaphoreSlim startupGate = new(1, 1);
     private readonly SemaphoreSlim writeGate = new(1, 1);
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> pending = new();
@@ -15,6 +17,11 @@ internal sealed class CodexAppServerClient : IDisposable
     private int nextId;
     private bool initialized;
     private bool disposed;
+
+    public CodexAppServerClient(Func<CancellationToken, Task<string>> resolveExecutable)
+    {
+        this.resolveExecutable = resolveExecutable;
+    }
 
     public event Action<string, JsonElement>? Notification;
 
@@ -38,52 +45,34 @@ internal sealed class CodexAppServerClient : IDisposable
                 initialized = false;
             }
 
-            var start = new ProcessStartInfo
-            {
-                FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "codex",
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            if (OperatingSystem.IsWindows())
-            {
-                // npm installs codex.cmd on Windows; cmd resolves it from PATH.
-                start.ArgumentList.Add("/d");
-                start.ArgumentList.Add("/c");
-                start.ArgumentList.Add("codex app-server");
-            }
-            else
-            {
-                start.ArgumentList.Add("app-server");
-            }
+            var executable = await resolveExecutable(cancellationToken);
+            var start = EngineLocator.CreateStartInfo(executable, "app-server");
 
             try
             {
-                process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the local AI client.");
+                process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the ChatGPT engine (Codex).");
             }
             catch (System.ComponentModel.Win32Exception ex)
             {
-                throw new InvalidOperationException("Codex CLI was not found. Install it, then restart Visual Studio.", ex);
+                throw new InvalidOperationException($"Could not start the ChatGPT engine at {executable}.", ex);
             }
 
             _ = ReadMessagesAsync(process);
-            _ = process.StandardError.ReadToEndAsync(); // Drain diagnostics so the subprocess cannot block.
+            stderr.Start(process); // Drains diagnostics and keeps the last lines for error messages.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
             try
             {
                 await RequestRawAsync("initialize", new
                 {
-                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.3.0" },
+                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.5.1" },
                 }, timeout.Token);
                 await WriteAsync(new { method = "initialized", @params = new { } }, timeout.Token);
                 initialized = true;
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new InvalidOperationException("The local AI client did not respond. Check that 'codex app-server' runs in PowerShell.", ex);
+                throw new InvalidOperationException($"The ChatGPT engine did not respond. {stderr.Text()}".Trim(), ex);
             }
         }
         finally
@@ -192,7 +181,7 @@ internal sealed class CodexAppServerClient : IDisposable
         finally
         {
             foreach (var entry in pending)
-                entry.Value.TrySetException(new InvalidOperationException("The local AI client stopped. Reopen OwnBridge."));
+                entry.Value.TrySetException(new InvalidOperationException($"The ChatGPT engine stopped. {stderr.Text()}".Trim()));
         }
     }
 
