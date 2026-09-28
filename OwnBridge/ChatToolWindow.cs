@@ -7,11 +7,12 @@ namespace OwnBridge;
 [VisualStudioContribution]
 internal sealed class ChatToolWindow : ToolWindow
 {
-    private readonly ChatPanel content = new();
+    private readonly ChatPanel content;
 
     public ChatToolWindow(VisualStudioExtensibility extensibility) : base(extensibility)
     {
         Title = "OwnBridge";
+        content = new ChatPanel(extensibility);
     }
 
     public override ToolWindowConfiguration ToolWindowConfiguration => new()

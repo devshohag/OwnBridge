@@ -18,6 +18,10 @@ internal sealed class CodexAppServerClient : IDisposable
 
     public event Action<string, JsonElement>? Notification;
 
+    // Requests sent by the app-server to OwnBridge (for example approval prompts).
+    // The handler must answer later with RespondAsync; it must not block the reader.
+    public Func<JsonElement, string, JsonElement, bool>? ServerRequestHandler { get; set; }
+
     public async Task EnsureStartedAsync(CancellationToken cancellationToken)
     {
         await startupGate.WaitAsync(cancellationToken);
@@ -72,7 +76,7 @@ internal sealed class CodexAppServerClient : IDisposable
             {
                 await RequestRawAsync("initialize", new
                 {
-                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.2.1" },
+                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.3.0" },
                 }, timeout.Token);
                 await WriteAsync(new { method = "initialized", @params = new { } }, timeout.Token);
                 initialized = true;
@@ -110,6 +114,15 @@ internal sealed class CodexAppServerClient : IDisposable
         }
     }
 
+    public Task RespondAsync(JsonElement id, object result, CancellationToken cancellationToken)
+        => WriteAsync(new { id, result }, cancellationToken);
+
+    // Older app-server builds use approved/denied; current builds use accept/decline.
+    public static object DeclineResultFor(string method) =>
+        method is "execCommandApproval" or "applyPatchApproval"
+            ? new { decision = "denied" }
+            : new { decision = "decline" };
+
     private async Task WriteAsync(object message, CancellationToken cancellationToken)
     {
         await writeGate.WaitAsync(cancellationToken);
@@ -135,14 +148,23 @@ internal sealed class CodexAppServerClient : IDisposable
             {
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
-                if (root.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
+                if (root.TryGetProperty("id", out var id) && root.TryGetProperty("method", out var requestMethod))
                 {
-                    if (root.TryGetProperty("method", out _))
+                    var requestId = id.Clone();
+                    var name = requestMethod.GetString() ?? "";
+                    var parameters = root.TryGetProperty("params", out var p) ? p.Clone() : default;
+                    var handled = false;
+                    try { handled = ServerRequestHandler?.Invoke(requestId, name, parameters) ?? false; }
+                    catch { handled = false; }
+                    if (!handled)
                     {
-                        // Fail closed: Phase 2 cannot approve commands, edits or external requests.
-                        await WriteAsync(new { id = id.GetInt32(), result = new { decision = "decline" } }, CancellationToken.None);
+                        // Fail closed: anything OwnBridge does not understand is declined.
+                        await RespondAsync(requestId, DeclineResultFor(name), CancellationToken.None);
                     }
-                    else if (pending.TryRemove(id.GetInt32(), out var completion))
+                }
+                else if (root.TryGetProperty("id", out id) && id.ValueKind == JsonValueKind.Number)
+                {
+                    if (pending.TryRemove(id.GetInt32(), out var completion))
                     {
                         if (root.TryGetProperty("error", out var error))
                         {

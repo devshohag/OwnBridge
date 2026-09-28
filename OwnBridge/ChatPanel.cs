@@ -1,3 +1,4 @@
+using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.UI;
 
 namespace OwnBridge;
@@ -6,7 +7,7 @@ internal sealed class ChatPanel : RemoteUserControl
 {
     private readonly ChatPanelData data;
 
-    public ChatPanel() : this(new ChatPanelData())
+    public ChatPanel(VisualStudioExtensibility extensibility) : this(new ChatPanelData(extensibility))
     {
     }
 

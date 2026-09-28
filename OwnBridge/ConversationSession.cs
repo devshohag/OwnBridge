@@ -20,7 +20,7 @@ internal sealed class ConversationSession
 
     public string RenderTranscript()
     {
-        var text = new StringBuilder("OwnBridge — Phase 2");
+        var text = new StringBuilder("OwnBridge — Phase 3");
         foreach (var message in messages)
         {
             var speaker = message.Role == "user" ? "You" :

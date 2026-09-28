@@ -12,6 +12,6 @@ internal sealed class OwnBridgeExtension : Extension
             version: this.ExtensionAssemblyVersion,
             publisherName: "OwnBridge",
             displayName: "OwnBridge for Visual Studio",
-            description: "ChatGPT coding chat in Visual Studio with your own account."),
+            description: "ChatGPT coding agent in Visual Studio with your own account: solution context and approved edits."),
     };
 }

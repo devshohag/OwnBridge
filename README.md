@@ -1,78 +1,53 @@
-# OwnBridge — Phase 2
+# OwnBridge — Phase 3
 
 **Your account. Your code. Your IDE.**
 
-OwnBridge is a free, open-source Visual Studio 2022 extension. Phase 2 connects the chat panel to the locally installed official Codex client. Users sign in with their own ChatGPT account through its browser flow. OwnBridge has no relay server, does not ask for an API key, and does not read or save account tokens.
+OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client locally (`codex app-server`) and lets users work with their own ChatGPT account. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
-## Phase 2 features
+## Phase 3 features
 
-- **Tools → Open OwnBridge** opens the dockable chat panel.
-- **Connect ChatGPT** checks an existing ChatGPT sign-in or opens the official browser sign-in.
-- **Send** streams a real reply into the panel. Further messages in the same open panel use the same Codex conversation thread.
-- OwnBridge stores messages in its own provider-neutral conversation object for the current panel lifetime. That object has a separate thread-id slot for each provider, so a later version can hand off chat context when switching providers.
-- The Codex thread runs in read-only mode. This phase does not edit code, run commands with approval, or attach the Visual Studio solution to the model.
+- **Solution workspace:** the agent works in the folder of the open solution (the nearest folder above the active file that contains a `.sln`/`.slnx`, otherwise the git root). One Codex thread is kept per workspace.
+- **Editor context:** with *Include the open file and selected text* ticked, the active file path and the current selection are sent with the prompt.
+- **Approvals:** the thread runs with `sandbox = workspace-write` and `approvalPolicy = untrusted`. The agent may read files; every file change and every non-trivial command shows an approval card with **Approve / Decline**. File changes show the diff; **View diff** opens it as a `.diff` document in Visual Studio. Unknown requests from the engine are declined automatically.
+- **Activity lines:** edited files and executed commands are listed in the chat.
+- **Stop:** interrupts the running reply (`turn/interrupt`); a waiting approval is declined.
+- **Connect ChatGPT:** opens the official browser sign-in and polls the account every 2 seconds until the sign-in is active (up to 5 minutes).
 
-Phase 2 supports ChatGPT only. Gemini CLI integration is Phase 4; switching providers with conversation handoff and durable OwnBridge history is Phase 5. Closing the tool window may lose the Phase 2 on-screen transcript, though Codex retains its own thread history. An OwnBridge server/account system is not part of this phase.
+Not in this phase: undo/checkpoints (planned later), Gemini (Phase 4), provider switching with handoff and durable history (Phase 5), managed runtimes (Phase 6). The development build still expects Codex CLI on `PATH` (`npm install -g @openai/codex`).
 
-**Final installation requirement:** the published VSIX must manage its provider runtimes itself. Users should not need to install Codex, Node.js, or Gemini CLI manually. Codex has an official native Windows distribution that can be bundled or installed privately without Node. Gemini CLI currently needs Node.js; its future integration must bundle or privately set up a compatible runtime. The exact packages, licensing notices, and update flow will be verified before release. The Phase 2 source ZIP below still expects a locally installed Codex CLI for development testing.
+## Build and install (Windows)
 
-## Build and test on Windows
+Requirements: Visual Studio 2022 17.14+, the *Visual Studio extension development* workload, .NET 8 SDK, Codex CLI.
 
-You need Visual Studio 2022 **17.14 or newer**, the **Visual Studio extension development** workload, the **.NET 8 SDK**, and a current official Codex CLI available on your `PATH`.
-
-In PowerShell, check the local client:
-
-```powershell
-codex --version
-```
-
-If PowerShell cannot find it, install the official client:
+1. Open `OwnBridge.sln` → **Build → Rebuild Solution** → 0 errors.
+2. Close Visual Studio, then in PowerShell from the repository folder:
 
 ```powershell
-npm install -g @openai/codex
+powershell -ExecutionPolicy Bypass -File .\Make-X64Vsix.ps1 -VsixPath .\OwnBridge\bin\Debug\net8.0\OwnBridge.vsix
+$id = (& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -format json | ConvertFrom-Json | Where-Object installationPath -like "*2022\Enterprise*").instanceId
+& "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\VSIXInstaller.exe" /instanceIds:$id (Resolve-Path .\OwnBridge\bin\Debug\net8.0\OwnBridge-x64.vsix)
 ```
 
-Restart Visual Studio after installing the CLI so it picks up the updated `PATH`. You do not need to enter an API key. OwnBridge's **Connect ChatGPT** button starts the browser sign-in.
+Passing `/instanceIds` is required when several Visual Studio instances are installed; without it VSIXInstaller hands the package to Visual Studio Installer, which shows only "You already have the frameworks, SDKs, and tools installed". Change `2022\Enterprise` if you use another edition.
 
-1. Extract this ZIP and open **`OwnBridge.sln`** in Visual Studio 2022.
-2. Build → **Rebuild Solution**; check for **0 errors**.
-3. The SDK generates **`OwnBridge/bin/Debug/net8.0/OwnBridge.vsix`** with two architecture targets. On some Visual Studio 2022 installations, VSIXInstaller redirects a two-target upgrade to Visual Studio Installer, which only shows a generic "frameworks, SDKs, and tools installed" page. Create a package for the x64 Visual Studio installation with:
+## Test
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\Make-X64Vsix.ps1 -VsixPath .\OwnBridge\bin\Debug\net8.0\OwnBridge.vsix
-   ```
-
-   This writes **`OwnBridge/bin/Debug/net8.0/OwnBridge-x64.vsix`** and leaves the build output untouched. The script changes only the unsigned VSIX deployment manifest's installation targets; it removes ARM64 and keeps AMD64. For an ARM64 Visual Studio installation, this x64 package is unsuitable.
-
-4. Close all Visual Studio windows and install **`OwnBridge-x64.vsix`**. If VSIXInstaller says multiple targets are present, check that the file name ends in `-x64.vsix`. This upgrades Phase 1 because the extension ID is unchanged and the assembly version is `0.2.1.0`.
-5. Select **Tools → Open OwnBridge**, click **Connect ChatGPT**, and complete the browser sign-in. The status should say **Connected to ChatGPT**. If the client was already signed in with ChatGPT, it may show this status immediately.
-6. Send `Say hello in one sentence.` A real answer should appear. Send a follow-up referring to that answer to verify the thread continues.
-
-The VSIX is produced by **building on Windows**; the ZIP contains source, not a prebuilt VSIX. If F5 reports that the startup project cannot be launched, use the manual VSIX installation in steps 3–4. A successful rebuild is the key check. If build fails, copy the *first* error from **View → Output → Build**.
-
-If the panel says the local client stopped or cannot be found, check `codex --version` in a newly opened PowerShell window, restart Visual Studio, then click **Connect ChatGPT** again. If `codex login status` says you are using an API key, use the ChatGPT browser sign-in in OwnBridge for subscription access; OwnBridge does not send prompts with the API-key session.
+1. Open a solution and any `.cs` file in it; select a method.
+2. **Tools → Open OwnBridge**. The header shows the workspace after the first Send.
+3. Ask: `Explain the selected code.` → answer only, no approvals.
+4. Ask: `Add an XML doc comment to the selected method.` → an approval card with the diff appears. **Approve** → the file changes in Visual Studio. Try **Decline** once as well.
+5. Ask: `Run dotnet build and tell me the result.` → a command approval card appears.
+6. Start a long request and press **Stop**.
 
 ## Architecture
 
-- `CodexAppServerClient` launches `codex app-server` locally and speaks its documented JSONL protocol over standard input and output.
-- `CodexChatProvider` checks account status, starts the browser login, creates a read-only thread and streams turn events.
-- `IChatProvider` is the provider boundary; Gemini can later use the official Gemini CLI ACP interface.
-- `ConversationSession` owns the visible message list and a per-provider thread-id map. Phase 2 keeps it in memory. Cross-provider handoff is not yet implemented.
-- `ChatPanelData` handles remote UI bindings and maintains the visible status and transcript.
-
-The local client program is free. AI access follows the user's ChatGPT plan and its applicable limits; it is not an unlimited API entitlement. OwnBridge never forwards prompts through a server operated by this project.
-
-## Roadmap
-
-| Phase | Goal | Status |
-| --- | --- | --- |
-| 1 | Visual Studio command, dockable panel, prompt UI | Tested in Visual Studio 2022 |
-| 2 | ChatGPT browser sign-in and streamed live chat through local app-server | Source in this ZIP; Windows build/test pending |
-| 3 | Solution/file context, reviewable code changes and approvals | Planned |
-| 4 | Gemini via the official Gemini CLI ACP interface | Planned |
-| 5 | Mid-chat provider switching, context handoff, durable history | Planned |
-| 6 | One-click VSIX with managed provider runtimes, Windows integration tests, and release guide | Planned |
+- `CodexAppServerClient` — starts `codex app-server`, JSON-RPC over stdio; routes server requests (approvals) to a handler and fails closed.
+- `CodexChatProvider` — sign-in, per-workspace threads, streaming, activity, approval mapping (current `accept/decline` and legacy `approved/denied` shapes), interrupt.
+- `IChatProvider` / `IChatTurnObserver` — provider boundary for later engines (Gemini via ACP).
+- `EditorContext` — captures the active file and selection and finds the workspace root.
+- `ChatPanelData` / `ChatPanel.xaml` — Remote UI view model: chat, approval card, stop.
+- `ConversationSession` — OwnBridge-owned transcript and per-provider thread map (in memory).
 
 ## License and affiliation
 
-MIT; see [LICENSE](LICENSE). OwnBridge is an independent community project, not an official Microsoft, OpenAI, or Google extension.
+MIT; see [LICENSE](LICENSE). OwnBridge is an independent community project, not an official Microsoft, OpenAI or Google extension.

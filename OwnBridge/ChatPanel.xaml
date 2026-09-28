@@ -1,17 +1,23 @@
 <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
               xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
               xmlns:vs="http://schemas.microsoft.com/visualstudio/extensibility/2022/xaml">
-  <Grid MinWidth="300" MinHeight="260" Margin="12">
+  <DataTemplate.Resources>
+    <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+  </DataTemplate.Resources>
+  <Grid MinWidth="300" MinHeight="300" Margin="12">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
     <StackPanel Grid.Row="0" Margin="0,0,0,10" Background="#1E293B">
       <TextBlock Text="OwnBridge" FontSize="17" FontWeight="SemiBold" Foreground="White" />
-      <TextBlock Text="Phase 2 · ChatGPT" Foreground="White" Opacity="0.8" />
+      <TextBlock Text="Phase 3 · ChatGPT" Foreground="White" Opacity="0.8" />
+      <TextBlock Text="{Binding WorkspaceText}" Foreground="White" Opacity="0.8" TextWrapping="Wrap" />
       <TextBlock Text="{Binding Status}" Foreground="White" TextWrapping="Wrap" Margin="0,4,0,4" />
       <Button Content="Connect ChatGPT" HorizontalAlignment="Left" Padding="8,4"
               Command="{Binding ConnectCommand}" />
@@ -21,12 +27,40 @@
              IsReadOnly="True" TextWrapping="Wrap"
              VerticalScrollBarVisibility="Auto" Margin="0,0,0,10" />
 
-    <TextBox Grid.Row="2" Text="{Binding Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+    <Border Grid.Row="2" Margin="0,0,0,10" Padding="8" BorderThickness="2" BorderBrush="#F59E0B"
+            Background="#FFFBEB"
+            Visibility="{Binding HasApproval, Converter={StaticResource BoolToVisibility}}">
+      <StackPanel>
+        <TextBlock Text="{Binding ApprovalTitle}" FontWeight="SemiBold" Foreground="Black" Margin="0,0,0,6" />
+        <TextBox Text="{Binding ApprovalDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                 FontFamily="Consolas" MaxHeight="220" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
+        <StackPanel Orientation="Horizontal">
+          <Button Content="Approve" MinWidth="78" Padding="8,4" Margin="0,0,8,0"
+                  Command="{Binding ApproveCommand}" />
+          <Button Content="Decline" MinWidth="78" Padding="8,4" Margin="0,0,8,0"
+                  Command="{Binding DeclineCommand}" />
+          <Button Content="View diff" MinWidth="78" Padding="8,4"
+                  Command="{Binding ViewDiffCommand}"
+                  Visibility="{Binding HasDiff, Converter={StaticResource BoolToVisibility}}" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="3" Margin="0,0,0,6" Padding="4" Background="#1E293B">
+      <CheckBox Foreground="White" Content="Include the open file and selected text"
+                IsChecked="{Binding IncludeEditorContext, Mode=TwoWay}" />
+    </Border>
+
+    <TextBox Grid.Row="4" Text="{Binding Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
              AcceptsReturn="True" TextWrapping="Wrap" MinHeight="76"
              VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
 
-    <Button Grid.Row="3" Content="Send" HorizontalAlignment="Right"
-            MinWidth="78" Padding="8,4"
-            Command="{Binding SendCommand}" CommandParameter="{Binding Prompt}" />
+    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button Content="Stop" MinWidth="78" Padding="8,4" Margin="0,0,8,0"
+              Command="{Binding StopCommand}"
+              Visibility="{Binding IsRunning, Converter={StaticResource BoolToVisibility}}" />
+      <Button Content="Send" MinWidth="78" Padding="8,4"
+              Command="{Binding SendCommand}" CommandParameter="{Binding Prompt}" />
+    </StackPanel>
   </Grid>
 </DataTemplate>
