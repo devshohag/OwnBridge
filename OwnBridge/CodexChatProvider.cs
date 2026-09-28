@@ -10,6 +10,44 @@ internal sealed class CodexChatProvider : IChatProvider
     private readonly CodexAppServerClient client;
     private readonly ConcurrentDictionary<string, long> threadTokens = new(StringComparer.Ordinal);
     private JsonElement lastRateLimits;
+    private string? model = Settings.Get("chatgptModel");
+    private IReadOnlyList<string>? models;
+
+    public string CurrentModel => model ?? "default";
+
+    public async Task<IReadOnlyList<string>> GetModelsAsync(CancellationToken cancellationToken)
+    {
+        if (models is not null) return models;
+        var list = new List<string> { "default" };
+        try
+        {
+            var result = await client.RequestAsync("model/list", new { }, cancellationToken);
+            foreach (var name in new[] { "data", "models", "items" })
+            {
+                if (!result.TryGetProperty(name, out var array) || array.ValueKind != JsonValueKind.Array) continue;
+                foreach (var entry in array.EnumerateArray())
+                {
+                    var id = entry.ValueKind == JsonValueKind.String ? entry.GetString()
+                        : Str(entry, "model") ?? Str(entry, "id") ?? Str(entry, "slug");
+                    if (!string.IsNullOrWhiteSpace(id) && !list.Contains(id)) list.Add(id);
+                }
+                break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Older engines have no model list; "default" still works.
+        }
+        return models = list;
+    }
+
+    // The next message starts a new ChatGPT thread with this model.
+    public void SetModel(string value)
+    {
+        var clean = value.Trim();
+        model = clean.Length == 0 || clean == "default" ? null : clean;
+        Settings.Set("chatgptModel", model ?? string.Empty);
+    }
     private volatile string? currentThreadId;
     private volatile string? currentTurnId;
 
@@ -193,6 +231,7 @@ internal sealed class CodexChatProvider : IChatProvider
             var newThread = await client.RequestAsync("thread/start", new
             {
                 cwd = request.WorkspaceRoot,
+                model,
                 sandbox = "workspace-write",
                 approvalPolicy = "untrusted",
                 serviceName = "ownbridge",
@@ -350,13 +389,14 @@ internal sealed class CodexChatProvider : IChatProvider
                 foreach (var entry in legacy.EnumerateObject())
                     changes.Add((entry.Name, KindText(entry.Value), Str(entry.Value, "unified_diff") ?? Str(entry.Value, "diff")));
 
+            var fileChanges = changes.Select(c => new FileChange(c.Path, FileChange.ActionFor(c.Kind))).ToList();
             var list = changes.Count == 0
                 ? "(The engine did not list the files.)"
-                : string.Join("\n", changes.Select(c => $"{c.Kind}: {Rel(c.Path, root)}"));
+                : string.Join("\n", fileChanges.Select(c => $"{c.Action}: {Rel(c.Path, root)}"));
             var diff = string.Join("\n", changes.Where(c => !string.IsNullOrEmpty(c.Diff))
                 .Select(c => $"--- {Rel(c.Path, root)}\n{c.Diff}"));
             return new ApprovalRequest("file", "ChatGPT wants to change files", list + suffix,
-                string.IsNullOrWhiteSpace(diff) ? null : diff);
+                string.IsNullOrWhiteSpace(diff) ? null : diff, fileChanges);
         }
 
         if (method is "item/commandExecution/requestApproval" or "execCommandApproval")

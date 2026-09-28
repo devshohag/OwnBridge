@@ -15,6 +15,11 @@ internal interface IChatProvider : IDisposable
         IChatTurnObserver observer, CancellationToken cancellationToken);
     Task StopAsync(CancellationToken cancellationToken);
 
+    // Model choice. "default" means the engine decides. Changing it starts a new engine session.
+    string CurrentModel { get; }
+    Task<IReadOnlyList<string>> GetModelsAsync(CancellationToken cancellationToken);
+    void SetModel(string model);
+
     // Account name and usage for the header; never includes secrets.
     Task<ProviderInfo> GetInfoAsync(ConversationSession? session, CancellationToken cancellationToken);
 }
@@ -43,4 +48,19 @@ internal interface IChatTurnObserver
 }
 
 // Kind is "file", "command" or "tool". Diff is set for file changes when the engine provides one.
-internal sealed record ApprovalRequest(string Kind, string Title, string Detail, string? Diff);
+// Changes lists each file with EDIT, CREATE or DELETE, so the card can label (and warn about) them.
+internal sealed record ApprovalRequest(string Kind, string Title, string Detail, string? Diff,
+    IReadOnlyList<FileChange>? Changes = null)
+{
+    public bool DeletesFiles => Changes?.Any(c => c.Action == "DELETE") == true;
+}
+
+internal sealed record FileChange(string Path, string Action)
+{
+    public static string ActionFor(string engineKind) => engineKind.ToLowerInvariant() switch
+    {
+        "add" or "create" or "new" => "CREATE",
+        "delete" or "remove" => "DELETE",
+        _ => "EDIT",
+    };
+}

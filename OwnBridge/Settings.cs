@@ -6,7 +6,7 @@ namespace OwnBridge;
 internal static class Settings
 {
     // The free Gemini API tier does not include Pro models, so a Flash model is the default.
-    public const string DefaultGeminiModel = "gemini-2.5-flash";
+    public const string DefaultGeminiModel = "gemini-3.8-flash";
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OwnBridge", "settings.json");
@@ -21,6 +21,17 @@ internal static class Settings
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             File.WriteAllText(FilePath, JsonSerializer.Serialize(all));
         }
+    }
+
+    public static string? Get(string name) =>
+        Read().TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
+
+    public static void Set(string name, string value)
+    {
+        var all = Read();
+        all[name] = value;
+        Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(all));
     }
 
     private static Dictionary<string, string> Read()

@@ -12,6 +12,20 @@ internal sealed class GeminiChatProvider : IChatProvider
     private readonly ConcurrentDictionary<string, long> sessionTokens = new(StringComparer.Ordinal);
     private volatile string? currentSessionId;
     private bool authenticatedWithKey;
+    private readonly List<string> models = new();
+
+    public string CurrentModel => Settings.GeminiModel;
+
+    // Gemini CLI lists the models this key can use when a session starts.
+    public Task<IReadOnlyList<string>> GetModelsAsync(CancellationToken cancellationToken)
+    {
+        lock (models)
+        {
+            var list = models.Count > 0 ? models.ToList() : new List<string>();
+            if (!list.Contains(CurrentModel)) list.Insert(0, CurrentModel);
+            return Task.FromResult<IReadOnlyList<string>>(list);
+        }
+    }
 
     public GeminiChatProvider()
     {
@@ -39,8 +53,6 @@ internal sealed class GeminiChatProvider : IChatProvider
             return env;
         },
         log, $"--acp --model {Settings.GeminiModel}", $"--experimental-acp --model {Settings.GeminiModel}");
-
-    public string Model => Settings.GeminiModel;
 
     // Changing the model restarts the engine; the next message starts a new Gemini session.
     public void SetModel(string model)
@@ -105,7 +117,7 @@ internal sealed class GeminiChatProvider : IChatProvider
 
     public Task<ProviderInfo> GetInfoAsync(ConversationSession? session, CancellationToken cancellationToken)
     {
-        var account = UsesApiKey ? $"Gemini: {KeyHint()} · model {Model}" :
+        var account = UsesApiKey ? $"Gemini: {KeyHint()} · model {CurrentModel}" :
             GoogleEmail() is { } email ? $"Gemini: {email} (Google sign-in)" : "Gemini: not connected";
         var usage = session?.ThreadFor("gemini") is { } id && sessionTokens.TryGetValue(id, out var tokens)
             ? $"This chat: {tokens:N0} tokens · remaining limit is not reported by Gemini CLI"
@@ -197,6 +209,16 @@ internal sealed class GeminiChatProvider : IChatProvider
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             throw new InvalidOperationException($"Gemini did not start a session within 90 seconds. Details: {client.LogPath}");
+        }
+        if (result.TryGetProperty("models", out var info) && info.ValueKind == JsonValueKind.Object &&
+            info.TryGetProperty("availableModels", out var available) && available.ValueKind == JsonValueKind.Array)
+        {
+            lock (models)
+            {
+                models.Clear();
+                foreach (var entry in available.EnumerateArray())
+                    if (Str(entry, "modelId") is { Length: > 0 } id && id != "auto") models.Add(id);
+            }
         }
         return Str(result, "sessionId") ?? throw new InvalidOperationException("Gemini did not create a session.");
     }
@@ -331,6 +353,7 @@ internal sealed class GeminiChatProvider : IChatProvider
         var title = Str(call, "title") ?? "a tool";
         var diff = new StringBuilder();
         var files = new List<string>();
+        var changes = new List<FileChange>();
 
         if (call.ValueKind == JsonValueKind.Object && call.TryGetProperty("content", out var content) &&
             content.ValueKind == JsonValueKind.Array)
@@ -339,7 +362,9 @@ internal sealed class GeminiChatProvider : IChatProvider
             {
                 if (Str(item, "type") != "diff" || Str(item, "path") is not { } path) continue;
                 var relative = Rel(path, root);
-                files.Add(relative);
+                var action = string.IsNullOrEmpty(Str(item, "oldText")) ? "CREATE" : "EDIT";
+                files.Add($"{action}: {relative}");
+                changes.Add(new FileChange(path, action));
                 diff.Append("--- ").Append(relative).Append('\n');
                 foreach (var line in (Str(item, "oldText") ?? "").Split('\n'))
                     if (line.Length > 0) diff.Append("- ").Append(line.TrimEnd('\r')).Append('\n');
@@ -351,9 +376,9 @@ internal sealed class GeminiChatProvider : IChatProvider
 
         if (kind == "edit" || files.Count > 0)
         {
-            var detail = files.Count > 0 ? string.Join("\n", files.Select(f => $"change: {f}")) : title;
+            var detail = files.Count > 0 ? string.Join("\n", files) : title;
             return new ApprovalRequest("file", "Gemini wants to change files", detail,
-                diff.Length > 0 ? diff.ToString() : null);
+                diff.Length > 0 ? diff.ToString() : null, changes);
         }
         if (kind == "execute")
             return new ApprovalRequest("command", "Gemini wants to run a command", title, null);

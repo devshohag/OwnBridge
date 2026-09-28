@@ -4,17 +4,20 @@
   <DataTemplate.Resources>
     <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
   </DataTemplate.Resources>
-  <Grid MinWidth="300" MinHeight="300" Margin="12">
+  <Grid MinWidth="320" MinHeight="360" Margin="12">
     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <StackPanel Grid.Row="0" Margin="0,0,0,10" Background="#1E293B">
+    <!-- Header: engine, account, usage, chat controls -->
+    <StackPanel Grid.Row="0" Margin="0,0,0,8" Background="#1E293B">
       <TextBlock Text="OwnBridge" FontSize="17" FontWeight="SemiBold" Foreground="White" />
       <TextBlock Text="{Binding HeaderText}" Foreground="White" Opacity="0.8" />
       <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
@@ -29,10 +32,16 @@
       <TextBlock Text="{Binding UsageText}" Foreground="White" Opacity="0.8" TextWrapping="Wrap" />
       <TextBlock Text="{Binding Status}" Foreground="White" TextWrapping="Wrap" Margin="0,4,0,4" />
       <StackPanel Orientation="Horizontal">
-        <Button Content="{Binding ConnectLabel}" Padding="8,4" Margin="0,0,8,0"
-                Command="{Binding ConnectCommand}" />
+        <Button Content="{Binding ConnectLabel}" Padding="8,4" Margin="0,0,8,0" Command="{Binding ConnectCommand}" />
         <Button Content="New chat" Padding="8,4" Margin="0,0,8,0" Command="{Binding NewChatCommand}" />
         <Button Content="History" Padding="8,4" Command="{Binding ToggleHistoryCommand}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+        <TextBlock Text="Model:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" />
+        <ComboBox IsEditable="True" MinWidth="240" Margin="0,0,8,0"
+                  ItemsSource="{Binding ModelOptions}"
+                  Text="{Binding ModelInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+        <Button Content="Set model" Padding="8,2" Command="{Binding SetModelCommand}" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
                   Visibility="{Binding IsGemini, Converter={StaticResource BoolToVisibility}}">
@@ -40,12 +49,6 @@
         <TextBox Text="{Binding GeminiKeyInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MinWidth="240" Margin="0,0,8,0" />
         <Button Content="Save key" Padding="8,2" Margin="0,0,8,0" Command="{Binding SaveGeminiKeyCommand}" />
         <Button Content="Remove key" Padding="8,2" Command="{Binding RemoveGeminiKeyCommand}" />
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
-                  Visibility="{Binding IsGemini, Converter={StaticResource BoolToVisibility}}">
-        <TextBlock Text="Gemini model:" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" />
-        <TextBox Text="{Binding GeminiModelInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MinWidth="240" Margin="0,0,8,0" />
-        <Button Content="Set model" Padding="8,2" Command="{Binding SetGeminiModelCommand}" />
       </StackPanel>
       <Border Margin="0,6,0,0" Padding="6" Background="#0F172A"
               Visibility="{Binding ShowHistory, Converter={StaticResource BoolToVisibility}}">
@@ -65,39 +68,80 @@
       </Border>
     </StackPanel>
 
-    <TextBox Grid.Row="1" Text="{Binding Transcript, Mode=OneWay}"
-             IsReadOnly="True" TextWrapping="Wrap"
-             VerticalScrollBarVisibility="Auto" Margin="0,0,0,10" />
+    <!-- Task runner -->
+    <Border Grid.Row="1" Margin="0,0,0,8" Padding="6" Background="#0F172A"
+            Visibility="{Binding HasTasks, Converter={StaticResource BoolToVisibility}}">
+      <StackPanel>
+        <TextBlock Text="{Binding TaskHeader}" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+          <Button Content="Run next" Padding="8,2" Margin="0,0,8,0" Command="{Binding RunNextTaskCommand}" />
+          <Button Content="Export results" Padding="8,2" Margin="0,0,8,0" Command="{Binding ExportTasksCommand}" />
+          <Button Content="Remove list" Padding="8,2" Margin="0,0,12,0" Command="{Binding ClearTasksCommand}" />
+          <CheckBox Content="Auto-continue" Foreground="White" Margin="0,0,12,0" VerticalAlignment="Center"
+                    IsChecked="{Binding AutoContinue, Mode=TwoWay}" />
+          <CheckBox Content="Commit after each task" Foreground="White" VerticalAlignment="Center"
+                    IsChecked="{Binding CommitEachTask, Mode=TwoWay}" />
+        </StackPanel>
+        <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding TaskRows}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <DockPanel Margin="0,1">
+                  <Button DockPanel.Dock="Right" Content="Skip" Padding="6,1" Margin="4,0,0,0" Command="{Binding SkipCommand}" />
+                  <Button DockPanel.Dock="Right" Content="Run" Padding="6,1" Margin="4,0,0,0" Command="{Binding RunCommand}" />
+                  <TextBlock Text="{Binding Line}" Foreground="White" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                </DockPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </StackPanel>
+    </Border>
 
-    <Border Grid.Row="2" Margin="0,0,0,10" Padding="8" BorderThickness="2" BorderBrush="#F59E0B"
+    <TextBox Grid.Row="2" Text="{Binding Transcript, Mode=OneWay}"
+             IsReadOnly="True" TextWrapping="Wrap"
+             VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
+
+    <!-- Approval card -->
+    <Border Grid.Row="3" Margin="0,0,0,8" Padding="8" BorderThickness="2" BorderBrush="#F59E0B"
             Background="#FFFBEB"
             Visibility="{Binding HasApproval, Converter={StaticResource BoolToVisibility}}">
       <StackPanel>
-        <TextBlock Text="{Binding ApprovalTitle}" FontWeight="SemiBold" Foreground="Black" Margin="0,0,0,6" />
+        <TextBlock Text="{Binding ApprovalTitle}" FontWeight="SemiBold" Foreground="Black" Margin="0,0,0,4" />
+        <TextBlock Text="⚠ This change DELETES files. Check the list carefully." Foreground="#B91C1C" FontWeight="SemiBold"
+                   Margin="0,0,0,4" Visibility="{Binding ApprovalDeletes, Converter={StaticResource BoolToVisibility}}" />
         <TextBox Text="{Binding ApprovalDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
                  FontFamily="Consolas" MaxHeight="220" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
         <StackPanel Orientation="Horizontal">
-          <Button Content="Approve" MinWidth="78" Padding="8,4" Margin="0,0,8,0"
-                  Command="{Binding ApproveCommand}" />
-          <Button Content="Decline" MinWidth="78" Padding="8,4" Margin="0,0,8,0"
-                  Command="{Binding DeclineCommand}" />
-          <Button Content="View diff" MinWidth="78" Padding="8,4"
-                  Command="{Binding ViewDiffCommand}"
+          <Button Content="Approve" MinWidth="78" Padding="8,4" Margin="0,0,8,0" Command="{Binding ApproveCommand}" />
+          <Button Content="Decline" MinWidth="78" Padding="8,4" Margin="0,0,8,0" Command="{Binding DeclineCommand}" />
+          <Button Content="View diff" MinWidth="78" Padding="8,4" Command="{Binding ViewDiffCommand}"
                   Visibility="{Binding HasDiff, Converter={StaticResource BoolToVisibility}}" />
         </StackPanel>
       </StackPanel>
     </Border>
 
-    <Border Grid.Row="3" Margin="0,0,0,6" Padding="4" Background="#1E293B">
+    <!-- Attach a plan or issue list -->
+    <Border Grid.Row="4" Margin="0,0,0,6" Padding="4" Background="#1E293B">
+      <DockPanel>
+        <Button DockPanel.Dock="Right" Content="Attach open file" Padding="8,2" Margin="8,0,0,0" Command="{Binding AttachOpenFileCommand}" />
+        <Button DockPanel.Dock="Right" Content="Attach" Padding="8,2" Margin="8,0,0,0" Command="{Binding AttachCommand}" />
+        <TextBlock DockPanel.Dock="Left" Text="Plan / issue file (.xlsx .csv .docx .md .txt):" Foreground="White"
+                   VerticalAlignment="Center" Margin="0,0,8,0" />
+        <TextBox Text="{Binding AttachPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="5" Margin="0,0,0,6" Padding="4" Background="#1E293B">
       <CheckBox Foreground="White" Content="Include the open file and selected text"
                 IsChecked="{Binding IncludeEditorContext, Mode=TwoWay}" />
     </Border>
 
-    <TextBox Grid.Row="4" Text="{Binding Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+    <TextBox Grid.Row="6" Text="{Binding Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
              AcceptsReturn="True" TextWrapping="Wrap" MinHeight="76"
              VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
 
-    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+    <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
       <Button Content="Stop" MinWidth="78" Padding="8,4" Margin="0,0,8,0"
               Command="{Binding StopCommand}"
               Visibility="{Binding IsRunning, Converter={StaticResource BoolToVisibility}}" />

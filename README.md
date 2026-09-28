@@ -1,10 +1,21 @@
-# OwnBridge — Phase 5
+# OwnBridge — Phase 6
 
 **Your account. Your code. Your IDE.**
 
 OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client (`codex app-server`) and the official Gemini CLI (ACP mode) locally, so users work with their own ChatGPT and Google accounts. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
-## Phase 5 features
+## Phase 6 features
+
+- **Attach a plan or issue list:** paste a path (or use *Attach open file*) for `.xlsx`, `.csv`, `.docx`, `.md` or `.txt`. Excel and Word are read with OwnBridge's own zip/XML code (first worksheet; Word headings, lists and tables).
+- **Task list:** Excel/CSV → one task per row (title and ID columns are detected by header names; every column is passed as details). Documents → one task per section (`##`/`#` headings, `Phase/Step/Task N`, or numbered items). Up to 500 tasks. The list is saved with the chat (`<chat>.tasks.json`) and survives restarts.
+- **Run task by task:** *Run next* or *Run* on a row. Each task is its own chat turn with a focused prompt (outline of all tasks + only this task). *Auto-continue* runs the next task after a successful one; Stop turns it off.
+- **EDIT / CREATE / DELETE:** the approval card labels every file; deletes get a red warning.
+- **Commit per task:** with *Commit after each task* on, only the files you approved for that task are committed (`git add -A -- <files>` + `git commit -- <files>`), message `OwnBridge task N: title`. Other changes in the repo are never included.
+- **Export results:** writes `<source>_OwnBridge_<date>.xlsx` next to the source file (original columns + status, summary, commit). The source file is never changed.
+- **Model picker:** an editable list per AI. ChatGPT models come from the engine (`model/list`, when supported); Gemini models come from the list Gemini CLI reports when a session starts. Default Gemini model: `gemini-3.8-flash`.
+- **Silence warning:** after 20 seconds without engine output the status says the service may be busy or retrying.
+
+## Phase 5 features (still included)
 
 - **History per solution:** conversations are saved as JSON lines under `%LOCALAPPDATA%\OwnBridge\workspaces\<id>\conversations\`. The id is a hash of the solution file path, so two solutions never share history. Opening a file from another solution switches to that solution's latest chat.
 - **Two windows, one solution:** an open conversation holds an exclusive `.lock` file. A second Visual Studio window gets its own conversation and cannot write into the first one's.

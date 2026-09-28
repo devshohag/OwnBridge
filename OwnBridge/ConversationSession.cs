@@ -32,6 +32,8 @@ internal sealed class ConversationSession : IDisposable
 
     public string FilePath => Path.Combine(Workspace.ConversationsFolder, Id + ".jsonl");
 
+    public string TasksPath => Path.Combine(Workspace.ConversationsFolder, Id + ".tasks.json");
+
     private string LockPath => Path.Combine(Workspace.ConversationsFolder, Id + ".lock");
 
     public static ConversationSession CreateNew(Workspace workspace)
@@ -138,7 +140,7 @@ internal sealed class ConversationSession : IDisposable
 
     public string RenderTranscript()
     {
-        var text = new StringBuilder("OwnBridge — Phase 5");
+        var text = new StringBuilder("OwnBridge — Phase 6");
         foreach (var message in messages)
         {
             var speaker = message.Role == "user" ? "You" : ProviderName(message.ProviderId);
