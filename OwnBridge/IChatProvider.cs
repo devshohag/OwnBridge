@@ -44,13 +44,15 @@ internal interface IChatTurnObserver
 {
     void OnPartialAnswer(string text);
     void OnActivity(string line);
+    // Short progress notes the AI writes while working ("I'll search for ..."); shown so approvals make sense.
+    void OnCommentary(string text);
     Task<bool> RequestApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken);
 }
 
 // Kind is "file", "command" or "tool". Diff is set for file changes when the engine provides one.
 // Changes lists each file with EDIT, CREATE or DELETE, so the card can label (and warn about) them.
 internal sealed record ApprovalRequest(string Kind, string Title, string Detail, string? Diff,
-    IReadOnlyList<FileChange>? Changes = null)
+    IReadOnlyList<FileChange>? Changes = null, string? Why = null, string? Command = null)
 {
     public bool DeletesFiles => Changes?.Any(c => c.Action == "DELETE") == true;
 }

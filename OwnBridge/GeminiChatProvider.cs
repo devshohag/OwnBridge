@@ -378,10 +378,10 @@ internal sealed class GeminiChatProvider : IChatProvider
         {
             var detail = files.Count > 0 ? string.Join("\n", files) : title;
             return new ApprovalRequest("file", "Gemini wants to change files", detail,
-                diff.Length > 0 ? diff.ToString() : null, changes);
+                diff.Length > 0 ? diff.ToString() : null, changes, title);
         }
         if (kind == "execute")
-            return new ApprovalRequest("command", "Gemini wants to run a command", title, null);
+            return new ApprovalRequest("command", "Gemini wants to run a command", title, null, null, null, title);
         return new ApprovalRequest("tool", "Gemini wants to use a tool", title, null);
     }
 

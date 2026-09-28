@@ -1,10 +1,19 @@
-# OwnBridge — Phase 6
+# OwnBridge — Phase 7
 
 **Your account. Your code. Your IDE.**
 
 OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client (`codex app-server`) and the official Gemini CLI (ACP mode) locally, so users work with their own ChatGPT and Google accounts. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
-## Phase 6 features
+## Phase 7 features
+
+- **New UI (Codex style):** header with the AI switch and usage; a context line with the solution, task progress and Chat / Tasks / History / New chat; one view at a time; Settings behind the gear. Colors come from the Visual Studio theme (`VsBrushes`), so light and dark follow Visual Studio automatically.
+- **Messages:** your messages as bubbles, AI answers as text with code blocks in monospace boxes, and compact activity lines (search, read, edit, approvals) with icons. The chat shows the latest exchange; *Show earlier* expands it.
+- **Clear approvals:** a badge (READ, BUILD, RUN, RISK, EDIT, CREATE, DELETE), a plain-language headline ("Searches or reads files (rg); changes nothing"), **Why** (the engine's reason, or the AI's latest note), the command or a colored diff, then Approve / Decline / Open diff.
+- **AI notes:** ChatGPT's short progress notes ("I'll search for ...") are shown as activity lines instead of being hidden.
+- **Auto-approve read-only commands (Settings, off by default):** only programs on a short read-only list (rg, grep, findstr, Select-String, Get-Content, dir, git status/diff/log/show...), and only when there is no `;`, `&`, `|`, `>`, `<`, backtick or `$(` outside quotes. Edits, builds and anything unclear still ask.
+- **Composer:** Ctrl+Enter sends; a chip turns editor context on or off; the paperclip opens Tasks.
+
+## Phase 6 features (still included)
 
 - **Attach a plan or issue list:** paste a path (or use *Attach open file*) for `.xlsx`, `.csv`, `.docx`, `.md` or `.txt`. Excel and Word are read with OwnBridge's own zip/XML code (first worksheet; Word headings, lists and tables).
 - **Task list:** Excel/CSV → one task per row (title and ID columns are detected by header names; every column is passed as details). Documents → one task per section (`##`/`#` headings, `Phase/Step/Task N`, or numbered items). Up to 500 tasks. The list is saved with the chat (`<chat>.tasks.json`) and survives restarts.

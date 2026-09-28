@@ -9,7 +9,6 @@ namespace OwnBridge;
 [DataContract]
 internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
 {
-    private const string Header = "OwnBridge — Phase 6";
 
     private readonly VisualStudioExtensibility extensibility;
     private readonly CodexChatProvider chatGpt = new();
@@ -26,25 +25,31 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     private bool isChatGpt = true;
     private bool isGemini;
     private string connectLabel = "Connect ChatGPT";
-    private string headerText = "Phase 6 · ChatGPT";
+    private string headerText = "ChatGPT";
     private string accountText = "Account: checking...";
     private string usageText = string.Empty;
     private bool showHistory;
     private string geminiKeyInput = string.Empty;
     private string modelInput = "default";
     private string prompt = string.Empty;
-    private string transcript = Header + "\n\nChoose ChatGPT or Gemini, open a file from your solution, then ask about it, ask for a code change, " +
-                                "or attach a plan / Excel issue list and run it task by task.";
+    private string emptyText = "Open a file from your solution, then ask about it, describe a change, or attach a plan / Excel issue list in Tasks.";
+    private string activeView = "chat";
+    private bool showAllMessages;
+    private string earlierText = string.Empty;
+    private bool autoApproveReads = Settings.Get("autoApproveReads") == "true";
+    private string badgeText = string.Empty;
+    private bool badgeDanger;
+    private string approvalHeadline = string.Empty;
+    private string approvalWhy = string.Empty;
+    private string approvalCommand = string.Empty;
     private string status = "Checking connection...";
-    private string workspaceText = "Workspace: open a file from your solution";
+    private string workspaceText = "No solution yet — open a file";
     private bool includeEditorContext = true;
     private bool busy;
     private bool isRunning;
     private bool hasApproval;
     private bool hasDiff;
     private bool approvalDeletes;
-    private string approvalTitle = string.Empty;
-    private string approvalDetail = string.Empty;
     private string attachPath = string.Empty;
     private bool hasTasks;
     private string taskHeader = string.Empty;
@@ -73,7 +78,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             }
             finally
             {
-                Transcript = (session?.RenderTranscript() ?? Header) + $"\n\nOwnBridge: {Status}";
+                RenderMessages();
                 Busy = false;
                 _ = RefreshInfoAsync();
                 _ = RefreshModelsAsync();
@@ -150,8 +155,9 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             }
             var workspace = session.Workspace;
             SwitchTo(ConversationSession.CreateNew(workspace));
-            Transcript = session!.RenderTranscript() + "\n\nNew chat started.";
-            ShowHistory = false;
+            RenderMessages();
+            Status = "New chat started.";
+            ActiveView = "chat";
             return Task.CompletedTask;
         });
 
@@ -163,7 +169,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
                 return Task.CompletedTask;
             }
             RefreshHistory();
-            ShowHistory = !showHistory;
+            ActiveView = activeView == "history" ? "chat" : "history";
             return Task.CompletedTask;
         });
 
@@ -272,9 +278,64 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             return Task.CompletedTask;
         });
 
+        ShowChatCommand = new AsyncCommand((_, _) => { ActiveView = "chat"; return Task.CompletedTask; });
+        ShowTasksCommand = new AsyncCommand((_, _) => { ActiveView = activeView == "tasks" ? "chat" : "tasks"; return Task.CompletedTask; });
+        ShowHistoryCommand = new AsyncCommand((_, _) => { RefreshHistory(); ActiveView = activeView == "history" ? "chat" : "history"; return Task.CompletedTask; });
+        ShowSettingsCommand = new AsyncCommand((_, _) => { ActiveView = activeView == "settings" ? "chat" : "settings"; return Task.CompletedTask; });
+        ShowEarlierCommand = new AsyncCommand((_, _) => { ShowAllMessages = !showAllMessages; RenderMessages(); return Task.CompletedTask; });
+
         _ = CheckConnectionAsync();
         _ = RefreshInfoAsync();
         _ = RefreshModelsAsync();
+    }
+
+    // Shows the latest exchange (or everything after "Show earlier"), so new replies stay in view.
+    private void RenderMessages()
+    {
+        Messages.Clear();
+        var all = session?.Messages ?? (IReadOnlyList<ConversationMessage>)Array.Empty<ConversationMessage>();
+        var start = showAllMessages ? 0 : Math.Max(0, all.Count - 2);
+        for (var i = start; i < all.Count; i++) Messages.Add(MessageItem.FromStored(all[i]));
+        HasMessages = all.Count > 0;
+        HasEarlier = start > 0 || showAllMessages && all.Count > 2;
+        EarlierText = showAllMessages ? "Show only the latest" : $"Show {start} earlier message{(start == 1 ? "" : "s")}";
+    }
+
+    private void FillApprovalCard(ApprovalRequest request)
+    {
+        DiffLines.Clear();
+        ApprovalWhy = string.IsNullOrWhiteSpace(request.Why) ? string.Empty : $"Why: {request.Why.Trim()}";
+        if (request.Kind == "file")
+        {
+            var changes = request.Changes ?? Array.Empty<FileChange>();
+            var root = session?.Workspace.Root;
+            string Rel(string path) => root is not null && Path.IsPathRooted(path) ? Path.GetRelativePath(root, path) : path;
+            var actions = changes.Select(c => c.Action).Distinct().ToList();
+            BadgeText = actions.Count == 1 ? actions[0] : actions.Count == 0 ? "EDIT" : "CHANGES";
+            BadgeDanger = request.DeletesFiles;
+            ApprovalHeadline = changes.Count switch
+            {
+                0 => request.Title,
+                1 => Rel(changes[0].Path),
+                _ => $"{changes.Count} files: " + string.Join(", ", changes.Take(3).Select(c => $"{c.Action} {Path.GetFileName(c.Path)}")) +
+                     (changes.Count > 3 ? ", ..." : string.Empty),
+            };
+            ApprovalCommand = string.Empty;
+            HasCommand = false;
+            if (request.Diff is { } diff)
+                foreach (var line in diff.Replace("\r\n", "\n").Split('\n').Take(80))
+                    DiffLines.Add(new DiffLine(line.Length > 160 ? line[..160] + "…" : line));
+        }
+        else
+        {
+            var command = request.Command ?? request.Detail;
+            var (kind, label) = CommandSafety.Classify(command);
+            BadgeText = kind switch { CommandKind.Read => "READ", CommandKind.Build => "BUILD", CommandKind.Risky => "RISK", _ => "RUN" };
+            BadgeDanger = kind == CommandKind.Risky;
+            ApprovalHeadline = label;
+            ApprovalCommand = command.Length > 1500 ? command[..1500] + "…" : command;
+            HasCommand = true;
+        }
     }
 
     private IChatProvider SelectedProvider => isGemini ? gemini : chatGpt;
@@ -289,7 +350,10 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         var activeFile = activeFilePath is null ? null : Path.GetRelativePath(root, activeFilePath);
         current.Add("user", provider.ProviderId, displayText, activeFile);
 
-        using var view = new TurnView(this, current.RenderTranscript(), provider.DisplayName);
+        ShowAllMessages = false;
+        ActiveView = "chat";
+        RenderMessages();
+        using var view = new TurnView(this, provider.DisplayName);
         runningProvider = provider;
         turnCancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         IsRunning = true;
@@ -300,7 +364,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             var answer = await provider.SendAsync(current, request, view, turnCancel.Token);
             current.Add("assistant", provider.ProviderId, view.WithActivity(answer));
             current.MarkSeen(provider.ProviderId);
-            Transcript = current.RenderTranscript();
+            RenderMessages();
             Status = $"Connected to {provider.DisplayName}";
             var stopped = answer.EndsWith("(Stopped.)", StringComparison.Ordinal);
             return (!stopped, stopped, answer);
@@ -308,14 +372,14 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         catch (OperationCanceledException)
         {
             current.Add("assistant", provider.ProviderId, view.WithActivity("(Stopped.)"));
-            Transcript = current.RenderTranscript();
+            RenderMessages();
             Status = "Stopped.";
             return (false, true, "(Stopped.)");
         }
         catch (Exception ex)
         {
             current.Add("assistant", provider.ProviderId, view.WithActivity($"[OwnBridge error] {ex.Message}"));
-            Transcript = current.RenderTranscript();
+            RenderMessages();
             Status = "Could not complete the message. Your prompt is still in this chat.";
             return (false, false, ex.Message);
         }
@@ -478,11 +542,11 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             if (session is null || session.Workspace.Key != workspace.Key)
             {
                 SwitchTo(ConversationSession.OpenLatestOrNew(workspace));
-                Transcript = session!.RenderTranscript();
+                RenderMessages();
             }
         }
 
-        if (session is not null) WorkspaceText = $"Workspace: {session.Workspace.DisplayName}  ({session.Workspace.Root})";
+        if (session is not null) WorkspaceText = session.Workspace.DisplayName;
         return session;
     }
 
@@ -509,7 +573,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         if (busy) return;
         if (session?.Id == id)
         {
-            ShowHistory = false;
+            ActiveView = "chat";
             return;
         }
         var opened = ConversationSession.TryOpen(workspace, id);
@@ -519,8 +583,8 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             return;
         }
         SwitchTo(opened);
-        Transcript = opened.RenderTranscript();
-        ShowHistory = false;
+        RenderMessages();
+        ActiveView = "chat";
     }
 
     private async Task RefreshInfoAsync()
@@ -566,8 +630,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             pendingApproval = completion;
             pendingDiff = request.Diff;
-            ApprovalTitle = request.DeletesFiles ? request.Title + " — includes DELETE" : request.Title;
-            ApprovalDetail = request.Diff is null ? request.Detail : $"{request.Detail}\n\n{Shorten(request.Diff, 4000)}";
+            FillApprovalCard(request);
             HasDiff = request.Diff is not null;
             ApprovalDeletes = request.DeletesFiles;
             HasApproval = true;
@@ -593,8 +656,11 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         HasApproval = false;
         HasDiff = false;
         ApprovalDeletes = false;
-        ApprovalTitle = string.Empty;
-        ApprovalDetail = string.Empty;
+        BadgeText = string.Empty;
+        ApprovalHeadline = string.Empty;
+        ApprovalWhy = string.Empty;
+        ApprovalCommand = string.Empty;
+        DiffLines.Clear();
         completion?.TrySetResult(approved);
     }
 
@@ -620,31 +686,30 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     {
         var name = SelectedProvider.DisplayName;
         ConnectLabel = $"Connect {name}";
-        HeaderText = $"Phase 6 · {name}";
+        HeaderText = name;
         if (!busy) _ = CheckConnectionAsync();
         _ = RefreshInfoAsync();
         _ = RefreshModelsAsync();
     }
 
-    // Renders one running turn and warns when the engine has been silent for a while.
+    // One running turn: a live assistant message with activity lines; warns when the engine is silent.
     private sealed class TurnView : IChatTurnObserver, IDisposable
     {
         private readonly ChatPanelData owner;
-        private readonly string prefix;
         private readonly string speaker;
+        private readonly MessageItem live;
         private readonly StringBuilder activity = new();
         private readonly Timer silenceTimer;
-        private string partial = string.Empty;
         private DateTime lastEvent = DateTime.UtcNow;
         private volatile bool waitingForUser;
 
-        public TurnView(ChatPanelData owner, string prefix, string speaker)
+        public TurnView(ChatPanelData owner, string speaker)
         {
             this.owner = owner;
-            this.prefix = prefix;
             this.speaker = speaker;
+            live = new MessageItem(false, speaker) { IsStreaming = true, StreamText = "Thinking…" };
+            owner.Messages.Add(live);
             silenceTimer = new Timer(_ => CheckSilence(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-            Render();
         }
 
         private void CheckSilence()
@@ -658,25 +723,37 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         public void OnPartialAnswer(string text)
         {
             lastEvent = DateTime.UtcNow;
-            partial = text;
-            Render();
+            live.StreamText = text;
         }
 
         public void OnActivity(string line)
         {
             lastEvent = DateTime.UtcNow;
-            lock (activity) activity.Append("\n  • ").Append(line);
-            Render();
+            lock (activity) activity.Append("\n• ").Append(line);
+            live.AddActivity(line);
         }
+
+        public void OnCommentary(string text) => OnActivity("Note: " + text.ReplaceLineEndings(" ").Trim());
 
         public async Task<bool> RequestApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
         {
-            lock (activity) activity.Append("\n  • Approval requested: ").Append(request.Title);
-            Render();
+            // Read-only commands can be approved automatically when the user turned that on.
+            if (request.Kind == "command" && owner.autoApproveReads)
+            {
+                var (kind, label) = CommandSafety.Classify(request.Command ?? request.Detail);
+                if (kind == CommandKind.Read)
+                {
+                    OnActivity($"Auto-approved (read-only): {label}");
+                    return true;
+                }
+            }
+
             waitingForUser = true;
             try
             {
-                return await owner.WaitForApprovalAsync(request, cancellationToken);
+                var approved = await owner.WaitForApprovalAsync(request, cancellationToken);
+                OnActivity($"{(approved ? "Approved" : "Declined")}: {(request.Kind == "file" ? request.Detail.Split('\n')[0] : Shorten(request.Command ?? request.Title, 120))}");
+                return approved;
             }
             finally
             {
@@ -685,17 +762,12 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             }
         }
 
+        private static string Shorten(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+
         public string WithActivity(string answer)
         {
             lock (activity)
                 return activity.Length == 0 ? answer : $"{activity.ToString().TrimStart('\n')}\n\n{answer}";
-        }
-
-        private void Render()
-        {
-            string steps;
-            lock (activity) steps = activity.ToString();
-            owner.Transcript = $"{prefix}\n\n{speaker}:{steps}\n{partial}";
         }
 
         public void Dispose() => silenceTimer.Dispose();
@@ -705,7 +777,65 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     public string Prompt { get => prompt; set => SetProperty(ref prompt, value); }
 
     [DataMember]
-    public string Transcript { get => transcript; set => SetProperty(ref transcript, value); }
+    public string EmptyText { get => emptyText; private set => SetProperty(ref emptyText, value); }
+
+    [DataMember]
+    public ObservableList<MessageItem> Messages { get; } = new();
+
+    [DataMember]
+    public ObservableList<DiffLine> DiffLines { get; } = new();
+
+    [DataMember]
+    public string ActiveView
+    {
+        get => activeView;
+        set
+        {
+            SetProperty(ref activeView, value);
+            IsChatView = value == "chat";
+            IsTasksView = value == "tasks";
+            IsHistoryView = value == "history";
+            IsSettingsView = value == "settings";
+        }
+    }
+
+    private bool isChatView = true, isTasksView, isHistoryView, isSettingsView, hasMessages, hasEarlier, hasCommand;
+
+    [DataMember] public bool IsChatView { get => isChatView; private set => SetProperty(ref isChatView, value); }
+    [DataMember] public bool IsTasksView { get => isTasksView; private set => SetProperty(ref isTasksView, value); }
+    [DataMember] public bool IsHistoryView { get => isHistoryView; private set => SetProperty(ref isHistoryView, value); }
+    [DataMember] public bool IsSettingsView { get => isSettingsView; private set => SetProperty(ref isSettingsView, value); }
+    [DataMember] public bool HasMessages { get => hasMessages; private set { SetProperty(ref hasMessages, value); NoMessages = !value; } }
+    private bool noMessages = true, badgeNormal = true;
+    [DataMember] public bool NoMessages { get => noMessages; private set => SetProperty(ref noMessages, value); }
+    [DataMember] public bool BadgeNormal { get => badgeNormal; private set => SetProperty(ref badgeNormal, value); }
+    [DataMember] public bool HasEarlier { get => hasEarlier; private set => SetProperty(ref hasEarlier, value); }
+    [DataMember] public string EarlierText { get => earlierText; private set => SetProperty(ref earlierText, value); }
+    [DataMember] public bool ShowAllMessages { get => showAllMessages; private set => SetProperty(ref showAllMessages, value); }
+    [DataMember] public bool HasCommand { get => hasCommand; private set => SetProperty(ref hasCommand, value); }
+
+    [DataMember]
+    public bool AutoApproveReads
+    {
+        get => autoApproveReads;
+        set
+        {
+            SetProperty(ref autoApproveReads, value);
+            Settings.Set("autoApproveReads", value ? "true" : "false");
+        }
+    }
+
+    [DataMember] public string BadgeText { get => badgeText; private set => SetProperty(ref badgeText, value); }
+    [DataMember] public bool BadgeDanger { get => badgeDanger; private set { SetProperty(ref badgeDanger, value); BadgeNormal = !value; } }
+    [DataMember] public string ApprovalHeadline { get => approvalHeadline; private set => SetProperty(ref approvalHeadline, value); }
+    [DataMember] public string ApprovalWhy { get => approvalWhy; private set => SetProperty(ref approvalWhy, value); }
+    [DataMember] public string ApprovalCommand { get => approvalCommand; private set => SetProperty(ref approvalCommand, value); }
+
+    [DataMember] public AsyncCommand ShowChatCommand { get; private set; } = null!;
+    [DataMember] public AsyncCommand ShowTasksCommand { get; private set; } = null!;
+    [DataMember] public AsyncCommand ShowHistoryCommand { get; private set; } = null!;
+    [DataMember] public AsyncCommand ShowSettingsCommand { get; private set; } = null!;
+    [DataMember] public AsyncCommand ShowEarlierCommand { get; private set; } = null!;
 
     [DataMember]
     public string Status { get => status; set => SetProperty(ref status, value); }
@@ -800,11 +930,6 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     [DataMember]
     public bool ApprovalDeletes { get => approvalDeletes; private set => SetProperty(ref approvalDeletes, value); }
 
-    [DataMember]
-    public string ApprovalTitle { get => approvalTitle; private set => SetProperty(ref approvalTitle, value); }
-
-    [DataMember]
-    public string ApprovalDetail { get => approvalDetail; private set => SetProperty(ref approvalDetail, value); }
 
     [DataMember] public AsyncCommand ConnectCommand { get; }
     [DataMember] public AsyncCommand SendCommand { get; }
@@ -830,42 +955,4 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         chatGpt.Dispose();
         gemini.Dispose();
     }
-}
-
-// One row in the History list; the row owns its Open command.
-[DataContract]
-internal sealed class ConversationItem
-{
-    public ConversationItem(string title, AsyncCommand openCommand)
-    {
-        Title = title;
-        OpenCommand = openCommand;
-    }
-
-    [DataMember]
-    public string Title { get; private set; }
-
-    [DataMember]
-    public AsyncCommand OpenCommand { get; private set; }
-}
-
-// One row in the task list, with its own Run and Skip commands.
-[DataContract]
-internal sealed class TaskRow
-{
-    public TaskRow(string line, AsyncCommand runCommand, AsyncCommand skipCommand)
-    {
-        Line = line;
-        RunCommand = runCommand;
-        SkipCommand = skipCommand;
-    }
-
-    [DataMember]
-    public string Line { get; private set; }
-
-    [DataMember]
-    public AsyncCommand RunCommand { get; private set; }
-
-    [DataMember]
-    public AsyncCommand SkipCommand { get; private set; }
 }

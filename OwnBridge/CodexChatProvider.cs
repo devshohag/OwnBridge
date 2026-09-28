@@ -247,6 +247,7 @@ internal sealed class CodexChatProvider : IChatProvider
         var items = new ConcurrentDictionary<string, JsonElement>(StringComparer.Ordinal);
         using var turnCancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         string answer = string.Empty;
+        string? lastCommentary = null;
 
         void OnNotification(string method, JsonElement data)
         {
@@ -281,7 +282,15 @@ internal sealed class CodexChatProvider : IChatProvider
                 var type = Str(item, "type");
                 if (type == "agentMessage")
                 {
-                    if (Str(item, "phase") == "commentary") return;
+                    if (Str(item, "phase") == "commentary")
+                    {
+                        if (Str(item, "text") is { Length: > 0 } note)
+                        {
+                            lastCommentary = note;
+                            observer.OnCommentary(note);
+                        }
+                        return;
+                    }
                     var message = Str(item, "text");
                     if (message is not null)
                     {
@@ -314,7 +323,7 @@ internal sealed class CodexChatProvider : IChatProvider
 
         bool OnServerRequest(JsonElement requestId, string method, JsonElement data)
         {
-            var approval = DescribeApproval(method, data, items, request.WorkspaceRoot);
+            var approval = DescribeApproval(method, data, items, request.WorkspaceRoot, lastCommentary);
             if (approval is null) return false; // Unknown request: the client declines it.
 
             _ = Task.Run(async () =>
@@ -374,11 +383,12 @@ internal sealed class CodexChatProvider : IChatProvider
     }
 
     private static ApprovalRequest? DescribeApproval(string method, JsonElement data,
-        ConcurrentDictionary<string, JsonElement> items, string root)
+        ConcurrentDictionary<string, JsonElement> items, string root, string? lastCommentary)
     {
         if (data.ValueKind != JsonValueKind.Object) return null;
         var reason = Str(data, "reason");
-        var suffix = reason is null ? "" : $"\n\nReason: {reason}";
+        var why = reason ?? lastCommentary;
+        var suffix = "";
 
         if (method is "item/fileChange/requestApproval" or "applyPatchApproval")
         {
@@ -396,7 +406,7 @@ internal sealed class CodexChatProvider : IChatProvider
             var diff = string.Join("\n", changes.Where(c => !string.IsNullOrEmpty(c.Diff))
                 .Select(c => $"--- {Rel(c.Path, root)}\n{c.Diff}"));
             return new ApprovalRequest("file", "ChatGPT wants to change files", list + suffix,
-                string.IsNullOrWhiteSpace(diff) ? null : diff, fileChanges);
+                string.IsNullOrWhiteSpace(diff) ? null : diff, fileChanges, why);
         }
 
         if (method is "item/commandExecution/requestApproval" or "execCommandApproval")
@@ -408,7 +418,8 @@ internal sealed class CodexChatProvider : IChatProvider
             var cwd = Str(data, "cwd");
             var detail = $"{(string.IsNullOrWhiteSpace(command) ? "(command not shown by the engine)" : command)}" +
                          (cwd is null ? "" : $"\n\nFolder: {cwd}") + suffix;
-            return new ApprovalRequest("command", "ChatGPT wants to run a command", detail, null);
+            return new ApprovalRequest("command", "ChatGPT wants to run a command", detail, null, null, why,
+                string.IsNullOrWhiteSpace(command) ? null : command);
         }
 
         return null;

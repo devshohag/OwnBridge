@@ -140,7 +140,7 @@ internal sealed class ConversationSession : IDisposable
 
     public string RenderTranscript()
     {
-        var text = new StringBuilder("OwnBridge — Phase 6");
+        var text = new StringBuilder("OwnBridge");
         foreach (var message in messages)
         {
             var speaker = message.Role == "user" ? "You" : ProviderName(message.ProviderId);
