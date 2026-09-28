@@ -4,6 +4,42 @@
 
 OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client (`codex app-server`) and the official Gemini CLI (ACP mode) locally, so users work with their own ChatGPT and Google accounts. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
+## 0.8.2
+
+- The open solution is read from Visual Studio, so OwnBridge knows the workspace even when no file is open in the editor. The context line shows the solution as soon as the panel opens.
+- With no solution open, messages go to a "General chat" (questions, explanations). The AI works in an empty OwnBridge folder there and cannot see your projects; Tasks need a solution.
+
+## 0.8.1
+
+- Excel/CSV rows whose status column ("Dev Status", else "Status"/"State", never QC/QA) says Done, Completed, Closed, Resolved or Fixed are loaded as finished tasks.
+
+## 0.8.0 — brand
+
+- Logo: the O pier and W truss joined by a teal arch ("Own" + "Bridge"). In the panel header it is drawn as vectors in the theme's text color; the extension icon is `OwnBridge/Images/OwnBridge.png` (128 px). Sources and larger sizes are in `assets/brand/`.
+
+## 0.7.5
+
+- Files outside a project (Program Files, the .NET SDK, NuGet cache, AppData, temp) never become the workspace; a workspace needs a .sln/.slnx or a git repository. Previously an SDK .targets file opened from a build error could become the workspace.
+- Attaching a plan by path uses the plan file's own folder to pick the workspace.
+
+## 0.7.4
+
+- Code blocks and command blocks are boxed with a header (language or "command") and a Copy button. Commands (powershell, bash, cmd, or blocks starting with dotnet/git/cd...) use a green-tinted box so they stand apart from code.
+
+## 0.7.3
+
+- Enter sends the message; Shift+Enter adds a new line (Ctrl+Enter also sends).
+
+## 0.7.2
+
+- Engine pipes are read and written as UTF-8, so Bangla text shows correctly (it showed as "à¦®à¦¾" before) and Bangla prompts reach the AI intact.
+
+## 0.7.1
+
+- Plan headings with `[DONE]`, `[COMPLETED]`, `(done)` or a check mark are loaded as finished tasks.
+- A workspace is identified by its folder, not its .sln, so a new project that creates its solution later keeps one chat and one task list. Files in sub-folders of the open workspace stay in it. History saved by older versions (keyed by the .sln path) is still found.
+- Tip: put `AGENTS.md` (Codex) and `GEMINI.md` (Gemini) with project rules in the repository root; both engines read them automatically.
+
 ## Phase 7 features
 
 - **New UI (Codex style):** header with the AI switch and usage; a context line with the solution, task progress and Chat / Tasks / History / New chat; one view at a time; Settings behind the gear. Colors come from the Visual Studio theme (`VsBrushes`), so light and dark follow Visual Studio automatically.

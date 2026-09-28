@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>OwnBridge</RootNamespace>
-    <AssemblyVersion>0.7.0.0</AssemblyVersion>
+    <AssemblyVersion>0.8.2.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,6 +15,10 @@
   <ItemGroup>
     <EmbeddedResource Include="ChatPanel.xaml" LogicalName="OwnBridge.ChatPanel.xaml" />
     <Page Remove="ChatPanel.xaml" />
+    <Content Include="Images\OwnBridge.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
     <Content Include=".vsextension\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

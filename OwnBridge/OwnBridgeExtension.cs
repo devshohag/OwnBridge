@@ -12,6 +12,10 @@ internal sealed class OwnBridgeExtension : Extension
             version: this.ExtensionAssemblyVersion,
             publisherName: "OwnBridge",
             displayName: "OwnBridge for Visual Studio",
-            description: "ChatGPT and Gemini coding agents in Visual Studio with your own accounts: solution context and approved edits."),
+            description: "ChatGPT and Gemini coding agents in Visual Studio with your own accounts: solution context and approved edits.")
+        {
+            // Shown in Extensions > Manage Extensions and on the Marketplace.
+            Icon = "Images/OwnBridge.png",
+        },
     };
 }

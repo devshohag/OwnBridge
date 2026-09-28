@@ -32,7 +32,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     private string geminiKeyInput = string.Empty;
     private string modelInput = "default";
     private string prompt = string.Empty;
-    private string emptyText = "Open a file from your solution, then ask about it, describe a change, or attach a plan / Excel issue list in Tasks.";
+    private string emptyText = "Ask about your solution, describe a change, or attach a plan / Excel issue list in Tasks.";
     private string activeView = "chat";
     private bool showAllMessages;
     private string earlierText = string.Empty;
@@ -43,7 +43,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     private string approvalWhy = string.Empty;
     private string approvalCommand = string.Empty;
     private string status = "Checking connection...";
-    private string workspaceText = "No solution yet — open a file";
+    private string workspaceText = "No solution open";
     private bool includeEditorContext = true;
     private bool busy;
     private bool isRunning;
@@ -61,6 +61,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         this.extensibility = extensibility;
         chatGpt.Progress = update => Status = update;
         gemini.Progress = update => Status = update;
+        _ = DetectSolutionAsync();
 
         ConnectCommand = new AsyncCommand(async (_, cancellationToken) =>
         {
@@ -95,14 +96,17 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             try
             {
                 var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
-                var current = EnsureSession(editor);
+                var current = await ResolveSessionAsync(editor, allowGeneral: true, cancellationToken);
                 if (current is null)
                 {
-                    Status = "Open any file from your solution in the editor, then press Send again.";
+                    Status = "Could not open a chat. Open a file from your solution and press Send again.";
                     return;
                 }
+                if (current.Workspace.IsGeneral)
+                    Status = "No solution open — general chat. Open a solution to let the AI read and change your code.";
                 Prompt = string.Empty;
-                await RunTurnAsync(current, SelectedProvider, message, message, includeEditorContext ? editor : null,
+                await RunTurnAsync(current, SelectedProvider, message, message,
+                    includeEditorContext && !current.Workspace.IsGeneral ? editor : null,
                     editor?.FilePath, cancellationToken);
             }
             finally
@@ -145,32 +149,25 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             }
         });
 
-        NewChatCommand = new AsyncCommand((_, _) =>
+        NewChatCommand = new AsyncCommand(async (_, clientContext, cancellationToken) =>
         {
-            if (busy) return Task.CompletedTask;
-            if (session is null)
-            {
-                Status = "Open a file from your solution first; the new chat belongs to that solution.";
-                return Task.CompletedTask;
-            }
-            var workspace = session.Workspace;
+            if (busy) return;
+            var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
+            var current = await ResolveSessionAsync(editor, allowGeneral: true, cancellationToken);
+            if (current is null) return;
+            var workspace = current.Workspace;
             SwitchTo(ConversationSession.CreateNew(workspace));
             RenderMessages();
-            Status = "New chat started.";
+            Status = workspace.IsGeneral ? "New general chat started (no solution open)." : "New chat started.";
             ActiveView = "chat";
-            return Task.CompletedTask;
         });
 
-        ToggleHistoryCommand = new AsyncCommand((_, _) =>
+        ToggleHistoryCommand = new AsyncCommand(async (_, clientContext, cancellationToken) =>
         {
-            if (session is null)
-            {
-                Status = "Open a file from your solution and send a message; history is kept per solution.";
-                return Task.CompletedTask;
-            }
+            var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
+            if (await ResolveSessionAsync(editor, allowGeneral: true, cancellationToken) is null) return;
             RefreshHistory();
             ActiveView = activeView == "history" ? "chat" : "history";
-            return Task.CompletedTask;
         });
 
         SaveGeminiKeyCommand = new AsyncCommand((_, _) =>
@@ -221,20 +218,23 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         AttachCommand = new AsyncCommand(async (_, clientContext, cancellationToken) =>
         {
             if (busy) return;
+            var path = attachPath.Trim().Trim('"');
             var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
-            var current = EnsureSession(editor);
-            if (current is null)
+            var current = (Path.IsPathRooted(path) ? EnsureSessionFor(path) : null)
+                ?? await ResolveSessionAsync(editor, allowGeneral: false, cancellationToken);
+            if (current is null || current.Workspace.IsGeneral)
             {
-                Status = "Open any file from your solution first; the task list belongs to that solution.";
+                Status = "That file is not inside a solution or git folder. Put the plan inside your project folder (or run git init there).";
                 return;
             }
-            var path = attachPath.Trim().Trim('"');
             if (path.Length == 0)
             {
                 Status = "Paste the file path (in Explorer: Shift + right-click → Copy as path), then press Attach.";
                 return;
             }
             if (!Path.IsPathRooted(path)) path = Path.Combine(current.Workspace.Root, path);
+            // The plan's own folder decides the workspace, not whatever file happens to be open.
+            current = EnsureSessionFor(path) ?? current;
             LoadPlan(current, path);
         });
 
@@ -242,8 +242,8 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         {
             if (busy) return;
             var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
-            var current = EnsureSession(editor);
-            if (current is null || editor is null)
+            var current = await ResolveSessionAsync(editor, allowGeneral: false, cancellationToken);
+            if (current is null || current.Workspace.IsGeneral || editor is null)
             {
                 Status = "Open the plan file (.md, .txt, .csv) in the editor first.";
                 return;
@@ -527,16 +527,55 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     }
 
     // Finds the workspace for the active file and makes sure the open conversation belongs to it.
-    private ConversationSession? EnsureSession(EditorContext? editor)
-    {
-        string? root = null;
-        if (editor is not null)
-        {
-            try { root = EditorContext.FindWorkspaceRoot(editor.FilePath); }
-            catch { root = null; }
-        }
+    private ConversationSession? EnsureSession(EditorContext? editor) => EnsureSessionFor(editor?.FilePath);
 
-        if (root is not null)
+    // Picks the workspace for this action, in order: the open file's project, the open solution,
+    // the chat already open, and (for chat only) the general no-solution chat.
+    private async Task<ConversationSession?> ResolveSessionAsync(EditorContext? editor, bool allowGeneral, CancellationToken cancellationToken)
+    {
+        var fileRoot = RootOf(editor?.FilePath);
+        if (fileRoot is not null) return UseRoot(fileRoot);
+
+        var solutionRoot = await SolutionLocator.GetSolutionFolderAsync(extensibility, cancellationToken);
+        if (solutionRoot is not null) return UseRoot(solutionRoot);
+
+        if (session is not null && !session.Workspace.IsGeneral) return session;
+        if (allowGeneral) return UseRoot(SolutionLocator.GeneralFolder);
+        return session;
+    }
+
+    // Called when the panel opens so the context line shows the solution before anything is sent.
+    private async Task DetectSolutionAsync()
+    {
+        try
+        {
+            if (session is not null) return;
+            var root = await SolutionLocator.GetSolutionFolderAsync(extensibility, CancellationToken.None);
+            if (root is not null && session is null) UseRoot(root);
+        }
+        catch { }
+    }
+
+    // Finds the workspace a file belongs to and makes sure the open conversation is that workspace's.
+    // A file outside any project (SDK, NuGet, temp) is ignored and the current workspace stays.
+    private ConversationSession? EnsureSessionFor(string? filePath)
+    {
+        var root = RootOf(filePath);
+        return root is not null ? UseRoot(root) : session;
+    }
+
+    private static string? RootOf(string? filePath)
+    {
+        if (filePath is null) return null;
+        try { return EditorContext.FindWorkspaceRoot(filePath); }
+        catch { return null; }
+    }
+
+    private ConversationSession? UseRoot(string root)
+    {
+        // A folder inside the open workspace (for example a new project's src\ folder) keeps the same chat.
+        var keep = session is not null && !session.Workspace.IsGeneral && session.Workspace.Contains(root);
+        if (!keep)
         {
             var workspace = new Workspace(root);
             if (session is null || session.Workspace.Key != workspace.Key)
@@ -545,7 +584,6 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
                 RenderMessages();
             }
         }
-
         if (session is not null) WorkspaceText = session.Workspace.DisplayName;
         return session;
     }

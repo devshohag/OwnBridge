@@ -65,7 +65,7 @@ internal sealed class CodexAppServerClient : IDisposable
             {
                 await RequestRawAsync("initialize", new
                 {
-                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.7.0" },
+                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.8.2" },
                 }, timeout.Token);
                 await WriteAsync(new { method = "initialized", @params = new { } }, timeout.Token);
                 initialized = true;

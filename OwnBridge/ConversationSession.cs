@@ -173,10 +173,32 @@ internal sealed class Workspace
     {
         Root = root;
         SolutionFile = FindSolution(root);
-        Key = (SolutionFile ?? root).ToLowerInvariant();
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Key)))[..12].ToLowerInvariant();
-        Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        // The folder is the identity, so creating a .sln later (a new project) keeps the same history.
+        // Older versions keyed by the .sln path; that history is reused when it exists.
+        var folderKey = root.TrimEnd('\\', '/').ToLowerInvariant();
+        var legacyKey = SolutionFile?.ToLowerInvariant();
+        Key = folderKey;
+        Folder = FolderFor(folderKey);
+        if (!Directory.Exists(Folder) && legacyKey is not null && Directory.Exists(FolderFor(legacyKey)))
+        {
+            Key = legacyKey;
+            Folder = FolderFor(legacyKey);
+        }
+    }
+
+    private static string FolderFor(string key)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "OwnBridge", "workspaces", hash);
+    }
+
+    public bool Contains(string path)
+    {
+        var full = Path.GetFullPath(path).TrimEnd('\\', '/');
+        var mine = Path.GetFullPath(Root).TrimEnd('\\', '/');
+        return full.Equals(mine, StringComparison.OrdinalIgnoreCase) ||
+               full.StartsWith(mine + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     public string Root { get; }
@@ -189,7 +211,10 @@ internal sealed class Workspace
 
     public string ConversationsFolder => Path.Combine(Folder, "conversations");
 
-    public string DisplayName => SolutionFile is not null ? Path.GetFileName(SolutionFile) : Root;
+    public bool IsGeneral => SolutionLocator.IsGeneral(Root);
+
+    public string DisplayName => IsGeneral ? "General chat — no solution open"
+        : SolutionFile is not null ? Path.GetFileName(SolutionFile) : Root;
 
     public void SaveInfo()
     {

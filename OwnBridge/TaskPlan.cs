@@ -56,6 +56,9 @@ internal sealed class TaskPlan
         {
             var titleColumn = FindColumn(attachment.Headers, "title", "summary", "subject", "issue", "name", "task", "description");
             var keyColumn = FindColumn(attachment.Headers, "id", "#", "key", "ticket", "no", "number", "sl");
+            // A status column ("Dev Status", "Status", "State") that says Done/Closed/Fixed marks the row as finished.
+            // "Dev" status wins over "QC" status, because the task is the development work.
+            var statusColumn = FindStatusColumn(attachment.Headers);
             var number = 0;
             foreach (var row in attachment.Rows.Take(MaxTasks))
             {
@@ -65,6 +68,7 @@ internal sealed class TaskPlan
                 if (title.Length == 0) title = row.FirstOrDefault(v => v.Length > 0) ?? $"Row {number}";
                 var details = string.Join("\n", attachment.Headers.Select((h, i) => i < row.Count && row[i].Length > 0 ? $"{h}: {row[i]}" : null)
                     .Where(line => line is not null));
+                var done = statusColumn is not null && DoneWords.Contains(Cell(statusColumn).Trim());
                 plan.Tasks.Add(new PlanTask
                 {
                     Number = number,
@@ -72,6 +76,8 @@ internal sealed class TaskPlan
                     Title = Shorten(title, 120),
                     Details = details,
                     SourceRow = row.ToList(),
+                    State = done ? TaskState.Done : TaskState.Pending,
+                    Summary = done ? $"Already {Cell(statusColumn).Trim()} in {attachment.Headers[statusColumn!.Value]}." : string.Empty,
                 });
             }
             return plan;
@@ -82,9 +88,39 @@ internal sealed class TaskPlan
         foreach (var (title, body) in sections.Take(MaxTasks))
         {
             index++;
-            plan.Tasks.Add(new PlanTask { Number = index, Title = Shorten(title, 120), Details = body.Trim() });
+            // "[DONE]", "[COMPLETED]", "(done)" or a check mark in a heading = already finished.
+            var done = DoneMarker.IsMatch(title);
+            var clean = DoneMarker.Replace(title, string.Empty).Trim().TrimEnd('-', '—', ':').Trim();
+            plan.Tasks.Add(new PlanTask
+            {
+                Number = index,
+                Title = Shorten(clean.Length > 0 ? clean : title, 120),
+                Details = body.Trim(),
+                State = done ? TaskState.Done : TaskState.Pending,
+                Summary = done ? "Marked done in the plan file." : string.Empty,
+            });
         }
         return plan;
+    }
+
+    private static readonly Regex DoneMarker =
+        new(@"\[(done|complete|completed)\]|\((done|complete|completed)\)|✅", RegexOptions.IgnoreCase);
+
+    private static readonly HashSet<string> DoneWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "done", "completed", "complete", "closed", "resolved", "fixed", "finished", "✅",
+    };
+
+    private static int? FindStatusColumn(List<string> headers)
+    {
+        var dev = headers.FindIndex(h => h.Contains("status", StringComparison.OrdinalIgnoreCase) &&
+                                         h.Contains("dev", StringComparison.OrdinalIgnoreCase));
+        if (dev >= 0) return dev;
+        var any = headers.FindIndex(h => (h.Contains("status", StringComparison.OrdinalIgnoreCase) ||
+                                          h.Trim().Equals("state", StringComparison.OrdinalIgnoreCase)) &&
+                                         !h.Contains("qc", StringComparison.OrdinalIgnoreCase) &&
+                                         !h.Contains("qa", StringComparison.OrdinalIgnoreCase));
+        return any >= 0 ? any : null;
     }
 
     private static int? FindColumn(List<string> headers, params string[] names)
@@ -229,6 +265,8 @@ internal static class Git
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            StandardOutputEncoding = EngineLocator.Utf8,
+            StandardErrorEncoding = EngineLocator.Utf8,
         };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start git.");

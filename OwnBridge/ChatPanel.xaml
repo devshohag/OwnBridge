@@ -143,6 +143,19 @@
                 ToolTip="Settings" Margin="10,0,0,0">
           <TextBlock Text="&#xE713;" FontFamily="{StaticResource Icons}" FontSize="14" />
         </Button>
+        <!-- Logo: O pier, W truss, teal arch. Drawn as vectors so it follows the theme's text color. -->
+        <Viewbox Width="22" Height="22" VerticalAlignment="Center" Margin="0,0,8,0">
+          <Canvas Width="128" Height="128">
+            <Path Data="M36,54 Q55,6 74,54" Stroke="#17A596" StrokeThickness="9" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+            <Ellipse Canvas.Left="21" Canvas.Top="54" Width="30" Height="44" StrokeThickness="9"
+                     Stroke="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" />
+            <Polyline Points="74,54 82,98 91,70 100,98 108,54" StrokeThickness="9" StrokeLineJoin="Round"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                      Stroke="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" />
+            <Line X1="10" Y1="104" X2="118" Y2="104" StrokeThickness="9" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                  Stroke="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" />
+          </Canvas>
+        </Viewbox>
         <TextBlock Text="OwnBridge" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" Margin="0,0,12,0" />
         <Border BorderThickness="1" CornerRadius="7" Padding="2" VerticalAlignment="Center"
                 BorderBrush="{DynamicResource {x:Static styles:VsBrushes.ToolWindowBorderKey}}">
@@ -221,13 +234,48 @@
                     <ItemsControl ItemsSource="{Binding Segments}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                          <Grid Margin="0,0,0,8">
+                          <Grid Margin="0,0,0,10">
                             <TextBox Style="{StaticResource Prose}" Text="{Binding Text, Mode=OneWay}"
                                      Visibility="{Binding IsText, Converter={StaticResource Vis}}" />
-                            <Border CornerRadius="6" Padding="10,8" Background="#14808080"
+                            <!-- Code block: neutral box -->
+                            <Border CornerRadius="8" BorderThickness="1" BorderBrush="#33808080" Background="#12808080"
                                     Visibility="{Binding IsCode, Converter={StaticResource Vis}}">
-                              <TextBox Style="{StaticResource Prose}" Text="{Binding Text, Mode=OneWay}" TextWrapping="NoWrap"
-                                       HorizontalScrollBarVisibility="Auto" FontFamily="{StaticResource Mono}" FontSize="12" />
+                              <StackPanel>
+                                <DockPanel Margin="10,5,6,3">
+                                  <Button DockPanel.Dock="Right" Style="{StaticResource Link}" Command="{Binding CopyCommand}" ToolTip="Copy code">
+                                    <StackPanel Orientation="Horizontal">
+                                      <TextBlock Text="&#xE8C8;" FontFamily="{StaticResource Icons}" FontSize="11" Margin="0,2,5,0" />
+                                      <TextBlock Text="{Binding CopyLabel}" FontSize="11" />
+                                    </StackPanel>
+                                  </Button>
+                                  <TextBlock Text="&#xE943;" FontFamily="{StaticResource Icons}" FontSize="11" Opacity="0.7" Margin="0,2,6,0" />
+                                  <TextBlock Text="{Binding Label}" FontSize="11" Opacity="0.7" />
+                                </DockPanel>
+                                <Border BorderThickness="0,1,0,0" BorderBrush="#26808080" Padding="10,8">
+                                  <TextBox Style="{StaticResource Prose}" Text="{Binding Text, Mode=OneWay}" TextWrapping="NoWrap"
+                                           HorizontalScrollBarVisibility="Auto" FontFamily="{StaticResource Mono}" FontSize="12" />
+                                </Border>
+                              </StackPanel>
+                            </Border>
+                            <!-- Command block: tinted box so commands stand apart from code -->
+                            <Border CornerRadius="8" BorderThickness="1" BorderBrush="#5530A46C" Background="#1A30A46C"
+                                    Visibility="{Binding IsCommand, Converter={StaticResource Vis}}">
+                              <StackPanel>
+                                <DockPanel Margin="10,5,6,3">
+                                  <Button DockPanel.Dock="Right" Style="{StaticResource Link}" Command="{Binding CopyCommand}" ToolTip="Copy command">
+                                    <StackPanel Orientation="Horizontal">
+                                      <TextBlock Text="&#xE8C8;" FontFamily="{StaticResource Icons}" FontSize="11" Margin="0,2,5,0" />
+                                      <TextBlock Text="{Binding CopyLabel}" FontSize="11" />
+                                    </StackPanel>
+                                  </Button>
+                                  <TextBlock Text="&#xE756;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="#30A46C" Margin="0,2,6,0" />
+                                  <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="SemiBold" Foreground="#30A46C" />
+                                </DockPanel>
+                                <Border BorderThickness="0,1,0,0" BorderBrush="#3330A46C" Padding="10,8">
+                                  <TextBox Style="{StaticResource Prose}" Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap"
+                                           FontFamily="{StaticResource Mono}" FontSize="12" />
+                                </Border>
+                              </StackPanel>
                             </Border>
                           </Grid>
                         </DataTemplate>
@@ -406,19 +454,22 @@
                  MinHeight="44" MaxHeight="160" VerticalScrollBarVisibility="Auto" BorderThickness="0" Background="Transparent"
                  Foreground="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}"
                  CaretBrush="{DynamicResource {x:Static styles:VsBrushes.WindowTextKey}}" FontSize="13"
-                 ToolTip="Ctrl+Enter sends">
+                 ToolTip="Enter sends · Shift+Enter adds a new line">
+          <!-- Our Enter binding runs before the text box's own one, so Enter sends and Shift+Enter still adds a line. -->
           <TextBox.InputBindings>
+            <KeyBinding Key="Enter" Command="{Binding SendCommand}" CommandParameter="{Binding Prompt}" />
             <KeyBinding Key="Enter" Modifiers="Control" Command="{Binding SendCommand}" CommandParameter="{Binding Prompt}" />
           </TextBox.InputBindings>
         </TextBox>
         <DockPanel Margin="0,6,0,0">
-          <Button DockPanel.Dock="Right" Style="{StaticResource Primary}" Padding="12,5" Margin="8,0,0,0" ToolTip="Send (Ctrl+Enter)"
+          <Button DockPanel.Dock="Right" Style="{StaticResource Primary}" Padding="12,5" Margin="8,0,0,0" ToolTip="Send (Enter)"
                   Command="{Binding SendCommand}" CommandParameter="{Binding Prompt}">
             <TextBlock Text="&#xE724;" FontFamily="{StaticResource Icons}" FontSize="13" />
           </Button>
           <Button DockPanel.Dock="Right" Style="{StaticResource Ghost}" Content="Stop" Padding="10,5" Margin="8,0,0,0"
                   Command="{Binding StopCommand}" Visibility="{Binding IsRunning, Converter={StaticResource Vis}}" />
           <TextBlock DockPanel.Dock="Right" Style="{StaticResource Muted}" Text="{Binding ModelInput}" VerticalAlignment="Center" Margin="8,0,0,0" />
+          <TextBlock DockPanel.Dock="Right" Style="{StaticResource Muted}" Text="Enter send · Shift+Enter new line" VerticalAlignment="Center" Margin="8,0,0,0" />
           <StackPanel Orientation="Horizontal">
             <ToggleButton Style="{StaticResource Chip}" IsChecked="{Binding IncludeEditorContext, Mode=TwoWay}"
                           ToolTip="Send the open file and selection">

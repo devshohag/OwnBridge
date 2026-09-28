@@ -50,46 +50,78 @@ internal sealed class MessageItem : NotifyPropertyChangedObject
         return item;
     }
 
-    // Splits ``` fenced blocks into separate code segments.
+    // Splits ``` fenced blocks (with their language, e.g. ```powershell) into separate segments.
     public void SetText(string text)
     {
         Segments.Clear();
         var buffer = new StringBuilder();
         var inCode = false;
+        var language = string.Empty;
         foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
         {
-            if (line.TrimStart().StartsWith("```", StringComparison.Ordinal))
+            var trimmed = line.TrimStart();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
             {
-                Flush(buffer, inCode);
+                Flush(buffer, inCode, language);
                 inCode = !inCode;
+                language = inCode ? trimmed[3..].Trim() : string.Empty;
                 continue;
             }
             buffer.Append(line).Append('\n');
         }
-        Flush(buffer, inCode);
+        Flush(buffer, inCode, language);
     }
 
-    private void Flush(StringBuilder buffer, bool code)
+    private void Flush(StringBuilder buffer, bool code, string language)
     {
         var value = buffer.ToString().Trim('\n');
         buffer.Clear();
-        if (value.Trim().Length > 0) Segments.Add(new SegmentItem(value, code));
+        if (value.Trim().Length > 0) Segments.Add(new SegmentItem(value, code, language));
     }
 }
 
+// Text, a code block or a command block. Code and command blocks get a header and a Copy button.
 [DataContract]
-internal sealed class SegmentItem
+internal sealed class SegmentItem : NotifyPropertyChangedObject
 {
-    public SegmentItem(string text, bool isCode)
+    private static readonly HashSet<string> ShellLanguages = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "powershell", "ps", "ps1", "pwsh", "bash", "sh", "shell", "zsh", "cmd", "bat", "batch", "console", "terminal",
+    };
+
+    private string copyLabel = "Copy";
+
+    public SegmentItem(string text, bool isBlock, string language = "")
     {
         Text = text;
-        IsCode = isCode;
-        IsText = !isCode;
+        IsText = !isBlock;
+        IsCommand = isBlock && (ShellLanguages.Contains(language) || (language.Length == 0 && LooksLikeCommand(text)));
+        IsCode = isBlock && !IsCommand;
+        Label = IsCommand ? (language.Length > 0 ? language : "command") : (language.Length > 0 ? language : "code");
+        CopyCommand = new AsyncCommand(async (_, _) =>
+        {
+            CopyLabel = Clipboard.TrySetText(Text) ? "Copied" : "Copy failed";
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            CopyLabel = "Copy";
+        });
     }
 
     [DataMember] public string Text { get; private set; }
-    [DataMember] public bool IsCode { get; private set; }
     [DataMember] public bool IsText { get; private set; }
+    [DataMember] public bool IsCode { get; private set; }
+    [DataMember] public bool IsCommand { get; private set; }
+    [DataMember] public string Label { get; private set; }
+    [DataMember] public string CopyLabel { get => copyLabel; private set => SetProperty(ref copyLabel, value); }
+    [DataMember] public AsyncCommand CopyCommand { get; private set; }
+
+    // An unlabeled block whose first line starts like a shell command.
+    private static bool LooksLikeCommand(string text)
+    {
+        var first = text.TrimStart().Split('\n')[0].TrimStart('$', '>', ' ');
+        foreach (var start in new[] { "cd ", "dotnet ", "git ", "npm ", "npx ", "Get-", "Set-", "Remove-", "Expand-", "Copy-", "powershell", "winget ", "docker " })
+            if (first.StartsWith(start, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 }
 
 // A compact line such as "Searched ..." or "Edited ..."; Glyph is a Segoe MDL2 Assets icon.

@@ -9,6 +9,8 @@ internal static class EngineLocator
 {
     private static readonly SemaphoreSlim installGate = new(1, 1);
 
+    public static readonly System.Text.Encoding Utf8 = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     public static string EnginesRoot =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OwnBridge", "engines");
 
@@ -103,6 +105,11 @@ internal static class EngineLocator
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // Engines speak UTF-8 (Bangla text included). Without this, .NET on Windows reads the
+            // pipes with the old ANSI code page and Bangla turns into "à¦®à¦¾".
+            StandardInputEncoding = Utf8,
+            StandardOutputEncoding = Utf8,
+            StandardErrorEncoding = Utf8,
         };
         var isShim = executable.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
                      executable.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
@@ -125,6 +132,7 @@ internal static class EngineLocator
     {
         var start = CreateStartInfo(executable, arguments);
         start.RedirectStandardInput = false;
+        start.StandardInputEncoding = null; // Only valid when input is redirected.
         using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {executable}.");
         var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var errors = process.StandardError.ReadToEndAsync(cancellationToken);
