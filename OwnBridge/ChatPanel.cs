@@ -4,7 +4,20 @@ namespace OwnBridge;
 
 internal sealed class ChatPanel : RemoteUserControl
 {
-    public ChatPanel() : base(dataContext: new ChatPanelData())
+    private readonly ChatPanelData data;
+
+    public ChatPanel() : this(new ChatPanelData())
     {
+    }
+
+    private ChatPanel(ChatPanelData data) : base(dataContext: data)
+    {
+        this.data = data;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) data.Dispose();
+        base.Dispose(disposing);
     }
 }

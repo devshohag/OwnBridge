@@ -9,9 +9,12 @@
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <StackPanel Grid.Row="0" Margin="0,0,0,10">
-      <TextBlock Text="OwnBridge" FontSize="17" FontWeight="SemiBold" />
-      <TextBlock Text="Phase 1 · Local UI preview" Opacity="0.72" />
+    <StackPanel Grid.Row="0" Margin="0,0,0,10" Background="#1E293B">
+      <TextBlock Text="OwnBridge" FontSize="17" FontWeight="SemiBold" Foreground="White" />
+      <TextBlock Text="Phase 2 · ChatGPT" Foreground="White" Opacity="0.8" />
+      <TextBlock Text="{Binding Status}" Foreground="White" TextWrapping="Wrap" Margin="0,4,0,4" />
+      <Button Content="Connect ChatGPT" HorizontalAlignment="Left" Padding="8,4"
+              Command="{Binding ConnectCommand}" />
     </StackPanel>
 
     <TextBox Grid.Row="1" Text="{Binding Transcript, Mode=OneWay}"
