@@ -32,11 +32,13 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     private string geminiKeyInput = string.Empty;
     private string modelInput = "default";
     private string prompt = string.Empty;
-    private string emptyText = "Ask about your solution, describe a change, or attach a plan / Excel issue list in Tasks.";
+    private string emptyText = "Ask about your solution, describe a change, attach a file or paste an error screenshot, or open Tasks for a plan / Excel issue list.";
     private string activeView = "chat";
     private bool showAllMessages;
     private string earlierText = string.Empty;
-    private bool autoApproveReads = Settings.Get("autoApproveReads") == "true";
+    // Approval mode: "ask" (every step), "reads" (read-only commands run), "edits" (also file edits and builds
+    // inside the solution), "auto" (everything except deleting files and risky commands). Saved per user.
+    private string approvalMode = Settings.Get("approvalMode") ?? (Settings.Get("autoApproveReads") == "true" ? "reads" : "ask");
     private string badgeText = string.Empty;
     private bool badgeDanger;
     private string approvalHeadline = string.Empty;
@@ -55,6 +57,10 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     private string taskHeader = string.Empty;
     private bool autoContinue;
     private bool commitEachTask = true;
+    private readonly List<ChatFile> pendingFiles = new();
+    private bool hasPendingFiles;
+    private string chatInfoText = string.Empty;
+    private bool hasChatInfo;
 
     public ChatPanelData(VisualStudioExtensibility extensibility)
     {
@@ -62,6 +68,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         chatGpt.Progress = update => Status = update;
         gemini.Progress = update => Status = update;
         _ = DetectSolutionAsync();
+        SetApprovalMode(approvalMode is "ask" or "reads" or "edits" or "auto" ? approvalMode : "ask");
 
         ConnectCommand = new AsyncCommand(async (_, cancellationToken) =>
         {
@@ -89,8 +96,12 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         SendCommand = new AsyncCommand(async (parameter, clientContext, cancellationToken) =>
         {
             if (busy) return;
-            var message = (parameter as string)?.Trim();
-            if (string.IsNullOrWhiteSpace(message)) return;
+            var message = (parameter as string)?.Trim() ?? string.Empty;
+            if (message.Length == 0 && pendingFiles.Count == 0) return;
+            if (message.Length == 0)
+                message = pendingFiles.Any(f => f.IsImage)
+                    ? "Look at the attached image. If it shows an error, find the cause in this solution and suggest the fix."
+                    : "Look at the attached file(s).";
 
             Busy = true;
             try
@@ -105,9 +116,13 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
                 if (current.Workspace.IsGeneral)
                     Status = "No solution open — general chat. Open a solution to let the AI read and change your code.";
                 Prompt = string.Empty;
-                await RunTurnAsync(current, SelectedProvider, message, message,
+                var files = pendingFiles.ToList();
+                ClearPendingFiles();
+                var display = files.Count == 0 ? message
+                    : message + "\n" + string.Join("\n", files.Select(f => (f.IsImage ? "🖼 " : "📎 ") + f.Name));
+                await RunTurnAsync(current, SelectedProvider, display, message,
                     includeEditorContext && !current.Workspace.IsGeneral ? editor : null,
-                    editor?.FilePath, cancellationToken);
+                    editor?.FilePath, cancellationToken, files);
             }
             finally
             {
@@ -219,23 +234,50 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         {
             if (busy) return;
             var path = attachPath.Trim().Trim('"');
-            var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
-            var current = (Path.IsPathRooted(path) ? EnsureSessionFor(path) : null)
-                ?? await ResolveSessionAsync(editor, allowGeneral: false, cancellationToken);
-            if (current is null || current.Workspace.IsGeneral)
-            {
-                Status = "That file is not inside a solution or git folder. Put the plan inside your project folder (or run git init there).";
-                return;
-            }
             if (path.Length == 0)
             {
-                Status = "Paste the file path (in Explorer: Shift + right-click → Copy as path), then press Attach.";
+                Status = "Press Browse… to pick the plan or Excel file (or paste its full path).";
                 return;
             }
-            if (!Path.IsPathRooted(path)) path = Path.Combine(current.Workspace.Root, path);
-            // The plan's own folder decides the workspace, not whatever file happens to be open.
-            current = EnsureSessionFor(path) ?? current;
-            LoadPlan(current, path);
+            await AttachPlanAsync(path, clientContext, cancellationToken);
+        });
+
+        BrowsePlanCommand = new AsyncCommand(async (_, clientContext, cancellationToken) =>
+        {
+            if (busy) return;
+            var picked = await FileDialog.PickFileAsync("Attach a plan or issue list", FileDialog.PlanFilter, session?.Workspace.Root);
+            if (picked is null) return;
+            await AttachPlanAsync(picked, clientContext, cancellationToken);
+        });
+
+        AttachChatFileCommand = new AsyncCommand(async (_, _) =>
+        {
+            var initial = session is { Workspace.IsGeneral: false } ? session.Workspace.Root
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            // Ctrl or Shift + click picks several files at once.
+            var picked = await FileDialog.PickFilesAsync("Attach files or images to the message (Ctrl + click for several)",
+                FileDialog.ChatFilter, initial, multiple: true);
+            foreach (var file in picked) AddPendingFile(file);
+            if (picked.Count > 1) Status = $"{pendingFiles.Count} files will be sent with your message.";
+        });
+
+        PasteImageCommand = new AsyncCommand((_, _) =>
+        {
+            try
+            {
+                var file = ChatFiles.SaveClipboardImage();
+                if (file is null)
+                {
+                    Status = "No image on the clipboard. Take a screenshot first (Win + Shift + S), then press Paste image.";
+                    return Task.CompletedTask;
+                }
+                AddPendingFile(file);
+            }
+            catch (Exception ex)
+            {
+                Status = $"Could not read the clipboard image: {ex.Message}";
+            }
+            return Task.CompletedTask;
         });
 
         AttachOpenFileCommand = new AsyncCommand(async (_, clientContext, cancellationToken) =>
@@ -272,9 +314,10 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         {
             if (busy || session is null) return Task.CompletedTask;
             plan = null;
+            TaskPlan.RemoveForWorkspace(session.Workspace);
             try { if (File.Exists(session.TasksPath)) File.Delete(session.TasksPath); } catch (IOException) { }
             RefreshTasks();
-            Status = "Task list removed from this chat.";
+            Status = "Task list removed. Your plan file itself is not changed.";
             return Task.CompletedTask;
         });
 
@@ -297,6 +340,15 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         var start = showAllMessages ? 0 : Math.Max(0, all.Count - 2);
         for (var i = start; i < all.Count; i++) Messages.Add(MessageItem.FromStored(all[i]));
         HasMessages = all.Count > 0;
+        if (all.Count > 0)
+        {
+            var first = all[0].CreatedUtc.ToLocalTime();
+            var last = all[^1].CreatedUtc.ToLocalTime();
+            var place = session?.Workspace.DisplayName ?? string.Empty;
+            ChatInfoText = $"Chat started {first:dd MMM yyyy, HH:mm} · last message {(last.Date == DateTime.Today ? $"today {last:HH:mm}" : $"{last:dd MMM, HH:mm}")} · {place}";
+        }
+        else ChatInfoText = string.Empty;
+        HasChatInfo = all.Count > 0;
         HasEarlier = start > 0 || showAllMessages && all.Count > 2;
         EarlierText = showAllMessages ? "Show only the latest" : $"Show {start} earlier message{(start == 1 ? "" : "s")}";
     }
@@ -343,7 +395,8 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     // One chat turn: saves the user message, runs the engine, streams into the transcript, saves the answer.
     // Returns Ok=false on error; Stopped=true when the user pressed Stop.
     private async Task<(bool Ok, bool Stopped, string Answer)> RunTurnAsync(ConversationSession current, IChatProvider provider,
-        string displayText, string engineText, EditorContext? editor, string? activeFilePath, CancellationToken cancellationToken)
+        string displayText, string engineText, EditorContext? editor, string? activeFilePath, CancellationToken cancellationToken,
+        IReadOnlyList<ChatFile>? files = null)
     {
         var root = current.Workspace.Root;
         var handoff = current.BuildHandoff(provider.ProviderId);
@@ -360,7 +413,10 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         Status = "Working... (Stop cancels this reply)";
         try
         {
-            var request = new ChatTurnRequest(engineText, root, editor, handoff);
+            var attached = files ?? Array.Empty<ChatFile>();
+            var request = new ChatTurnRequest(engineText, root, editor, handoff,
+                ChatFiles.BuildTextBlock(attached),
+                attached.Where(f => f.IsImage).Select(f => f.Path).ToList());
             var answer = await provider.SendAsync(current, request, view, turnCancel.Token);
             current.Add("assistant", provider.ProviderId, view.WithActivity(answer));
             current.MarkSeen(provider.ProviderId);
@@ -428,6 +484,14 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
 
                 task.Summary = result.Answer.Length > 500 ? result.Answer[..500] + "..." : result.Answer;
                 task.State = result.Ok ? TaskState.Done : result.Stopped ? TaskState.Pending : TaskState.Failed;
+                string? writeNote = null;
+                if (result.Ok)
+                {
+                    // Record "done" in the plan/Excel file itself, and commit it together with the task's changes.
+                    writeNote = plan.WriteBack(task, done: true);
+                    if (writeNote is null && current.Workspace.Contains(plan.SourceFile)) taskChangedPaths.Add(plan.SourceFile);
+                    if (writeNote is not null) Status = $"Task {task.Number} done. {writeNote}";
+                }
                 if (result.Ok && commitEachTask && taskChangedPaths.Count > 0 && Git.IsRepository(current.Workspace.Root))
                 {
                     try
@@ -454,6 +518,59 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         }
     }
 
+    private async Task AttachPlanAsync(string path, IClientContext clientContext, CancellationToken cancellationToken)
+    {
+        var editor = await EditorContext.CaptureAsync(clientContext, cancellationToken);
+        // The plan's own folder decides the workspace; otherwise the open file or solution does.
+        var current = (Path.IsPathRooted(path) ? EnsureSessionFor(path) : null)
+            ?? await ResolveSessionAsync(editor, allowGeneral: false, cancellationToken);
+        if (current is null || current.Workspace.IsGeneral)
+        {
+            Status = "Open your solution first (or keep the plan inside the project folder), then attach it.";
+            return;
+        }
+        if (!Path.IsPathRooted(path)) path = Path.Combine(current.Workspace.Root, path);
+        LoadPlan(current, path);
+    }
+
+    private void AddPendingFile(string path)
+    {
+        var problem = ChatFiles.Validate(path);
+        if (problem is not null)
+        {
+            Status = problem;
+            return;
+        }
+        if (pendingFiles.Any(f => string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase))) return;
+        if (pendingFiles.Count >= 10)
+        {
+            Status = "Up to 10 files per message.";
+            return;
+        }
+        var file = new ChatFile(path, ChatFiles.IsImage(path));
+        pendingFiles.Add(file);
+        PendingFiles.Add(new AttachmentChip((file.IsImage ? "🖼 " : "📎 ") + file.Name, new AsyncCommand((_, _) =>
+        {
+            var index = pendingFiles.IndexOf(file);
+            if (index >= 0)
+            {
+                pendingFiles.RemoveAt(index);
+                PendingFiles.RemoveAt(index);
+            }
+            HasPendingFiles = pendingFiles.Count > 0;
+            return Task.CompletedTask;
+        })));
+        HasPendingFiles = true;
+        Status = file.IsImage ? $"{file.Name} will be sent with your message." : $"{file.Name} will be sent with your message (as text).";
+    }
+
+    private void ClearPendingFiles()
+    {
+        pendingFiles.Clear();
+        PendingFiles.Clear();
+        HasPendingFiles = false;
+    }
+
     private void LoadPlan(ConversationSession current, string path)
     {
         try
@@ -465,10 +582,12 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
                 Status = $"No tasks found in {attachment.FileName}.";
                 return;
             }
+            loaded.MergeProgressFrom(TaskPlan.Load(current.Workspace.PlanStatePath(loaded.SourceFile)));
             plan = loaded;
             SavePlan();
             AttachPath = string.Empty;
-            Status = $"{loaded.Tasks.Count} tasks from {attachment.FileName}. Press Run next (or Run on a task).";
+            ActiveView = "tasks";
+            Status = $"{loaded.Tasks.Count} tasks from {attachment.FileName}, {loaded.DoneCount} already done. Press Run next (or Run on a task).";
         }
         catch (Exception ex)
         {
@@ -480,7 +599,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     {
         if (plan is not null && session is not null)
         {
-            try { plan.Save(session.TasksPath); } catch (IOException) { }
+            try { TaskPlan.SaveForWorkspace(plan, session.Workspace); } catch (IOException) { }
         }
         RefreshTasks();
     }
@@ -512,6 +631,18 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
                     item.State = item.State == TaskState.Skipped ? TaskState.Pending : TaskState.Skipped;
                     SavePlan();
                     return Task.CompletedTask;
+                }),
+                item.State == TaskState.Done ? "Not done" : "Mark done",
+                new AsyncCommand((_, _) =>
+                {
+                    if (busy || plan is null) return Task.CompletedTask;
+                    var done = item.State != TaskState.Done;
+                    item.State = done ? TaskState.Done : TaskState.Pending;
+                    item.Summary = done ? "Marked done by you." : string.Empty;
+                    var note = plan.WriteBack(item, done);
+                    SavePlan();
+                    Status = note ?? $"Task {item.Number} marked {(done ? "done" : "not done")} in {plan.SourceName}.";
+                    return Task.CompletedTask;
                 })));
         }
     }
@@ -520,7 +651,14 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     {
         session?.Dispose();
         session = next;
-        plan = TaskPlan.Load(next.TasksPath);
+        plan = TaskPlan.LoadForWorkspace(next.Workspace);
+        if (plan is null && TaskPlan.Load(next.TasksPath) is { } legacy)
+        {
+            // Older versions kept the list per chat; move it to the solution.
+            legacy.MergeProgressFrom(TaskPlan.Load(next.Workspace.PlanStatePath(legacy.SourceFile)));
+            plan = legacy;
+            try { TaskPlan.SaveForWorkspace(plan, next.Workspace); } catch (IOException) { }
+        }
         RefreshTasks();
         RefreshHistory();
         _ = RefreshInfoAsync();
@@ -675,8 +813,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             Status = "Waiting for your approval...";
             using var registration = cancellationToken.Register(() => completion.TrySetResult(false));
             var approved = await completion.Task;
-            if (approved && request.Changes is { } changes && taskChangedPaths is { } paths)
-                foreach (var change in changes) paths.Add(change.Path);
+            if (approved) RecordApprovedChanges(request);
             Status = approved ? "Approved. Working..." : "Declined. Working...";
             return approved;
         }
@@ -684,6 +821,61 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         {
             approvalGate.Release();
         }
+    }
+
+    // Files a task changed are committed with that task, whether approved by hand or automatically.
+    private void RecordApprovedChanges(ApprovalRequest request)
+    {
+        if (request.Changes is { } changes && taskChangedPaths is { } paths)
+            foreach (var change in changes) paths.Add(change.Path);
+    }
+
+    // Returns the activity line when this request may run without asking, or null when the card must ask.
+    private string? AutoDecision(ApprovalRequest request)
+    {
+        var mode = approvalMode;
+        if (mode == "ask") return null;
+        if (request.Kind == "file")
+        {
+            if (mode is not ("edits" or "auto") || request.DeletesFiles) return null;
+            var changes = request.Changes ?? Array.Empty<FileChange>();
+            var root = session?.Workspace;
+            if (changes.Count == 0 || root is null || root.IsGeneral) return null;
+            // Only files inside the open solution; anything outside it still asks.
+            foreach (var change in changes)
+            {
+                var full = Path.IsPathRooted(change.Path) ? change.Path : Path.Combine(root.Root, change.Path);
+                if (!root.Contains(full)) return null;
+            }
+            return "Auto-approved edit: " + string.Join(", ", changes.Select(c => $"{c.Action} {Path.GetFileName(c.Path)}"));
+        }
+        var (kind, label) = CommandSafety.Classify(request.Command ?? request.Detail);
+        var allowed = kind switch
+        {
+            CommandKind.Read => true,
+            CommandKind.Build => mode is "edits" or "auto",
+            CommandKind.Run => mode == "auto",
+            _ => false, // Risky: always ask.
+        };
+        if (request.Kind == "tool") allowed = mode == "auto";
+        return allowed ? $"Auto-approved ({label}): {request.Command ?? request.Title}" : null;
+    }
+
+    private void SetApprovalMode(string mode)
+    {
+        approvalMode = mode;
+        Settings.Set("approvalMode", mode);
+        ModeAsk = mode == "ask";
+        ModeReads = mode == "reads";
+        ModeEdits = mode == "edits";
+        ModeAuto = mode == "auto";
+        ApprovalModeText = mode switch
+        {
+            "reads" => "Approvals: auto-read",
+            "edits" => "Approvals: auto-edit",
+            "auto" => "Approvals: full auto",
+            _ => "Approvals: ask",
+        };
     }
 
     private void ClearApproval(bool approved)
@@ -775,15 +967,12 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
 
         public async Task<bool> RequestApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken)
         {
-            // Read-only commands can be approved automatically when the user turned that on.
-            if (request.Kind == "command" && owner.autoApproveReads)
+            // The approval mode decides what runs without asking. Deleting files and risky commands always ask.
+            if (owner.AutoDecision(request) is { } auto)
             {
-                var (kind, label) = CommandSafety.Classify(request.Command ?? request.Detail);
-                if (kind == CommandKind.Read)
-                {
-                    OnActivity($"Auto-approved (read-only): {label}");
-                    return true;
-                }
+                OnActivity(auto);
+                owner.RecordApprovedChanges(request);
+                return true;
             }
 
             waitingForUser = true;
@@ -852,16 +1041,15 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     [DataMember] public bool ShowAllMessages { get => showAllMessages; private set => SetProperty(ref showAllMessages, value); }
     [DataMember] public bool HasCommand { get => hasCommand; private set => SetProperty(ref hasCommand, value); }
 
-    [DataMember]
-    public bool AutoApproveReads
-    {
-        get => autoApproveReads;
-        set
-        {
-            SetProperty(ref autoApproveReads, value);
-            Settings.Set("autoApproveReads", value ? "true" : "false");
-        }
-    }
+    private bool modeAsk, modeReads, modeEdits, modeAuto;
+    private string approvalModeText = "Approvals: ask";
+
+    // One radio button per mode; setting one to true switches the mode.
+    [DataMember] public bool ModeAsk { get => modeAsk; set { SetProperty(ref modeAsk, value); if (value && approvalMode != "ask") SetApprovalMode("ask"); } }
+    [DataMember] public bool ModeReads { get => modeReads; set { SetProperty(ref modeReads, value); if (value && approvalMode != "reads") SetApprovalMode("reads"); } }
+    [DataMember] public bool ModeEdits { get => modeEdits; set { SetProperty(ref modeEdits, value); if (value && approvalMode != "edits") SetApprovalMode("edits"); } }
+    [DataMember] public bool ModeAuto { get => modeAuto; set { SetProperty(ref modeAuto, value); if (value && approvalMode != "auto") SetApprovalMode("auto"); } }
+    [DataMember] public string ApprovalModeText { get => approvalModeText; private set => SetProperty(ref approvalModeText, value); }
 
     [DataMember] public string BadgeText { get => badgeText; private set => SetProperty(ref badgeText, value); }
     [DataMember] public bool BadgeDanger { get => badgeDanger; private set { SetProperty(ref badgeDanger, value); BadgeNormal = !value; } }
@@ -901,6 +1089,18 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
 
     [DataMember]
     public ObservableList<TaskRow> TaskRows { get; } = new();
+
+    [DataMember]
+    public ObservableList<AttachmentChip> PendingFiles { get; } = new();
+
+    [DataMember]
+    public bool HasPendingFiles { get => hasPendingFiles; private set => SetProperty(ref hasPendingFiles, value); }
+
+    [DataMember]
+    public string ChatInfoText { get => chatInfoText; private set => SetProperty(ref chatInfoText, value); }
+
+    [DataMember]
+    public bool HasChatInfo { get => hasChatInfo; private set => SetProperty(ref hasChatInfo, value); }
 
     [DataMember]
     public string AttachPath { get => attachPath; set => SetProperty(ref attachPath, value); }
@@ -981,6 +1181,9 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     [DataMember] public AsyncCommand RemoveGeminiKeyCommand { get; }
     [DataMember] public AsyncCommand SetModelCommand { get; }
     [DataMember] public AsyncCommand AttachCommand { get; }
+    [DataMember] public AsyncCommand BrowsePlanCommand { get; }
+    [DataMember] public AsyncCommand AttachChatFileCommand { get; }
+    [DataMember] public AsyncCommand PasteImageCommand { get; }
     [DataMember] public AsyncCommand AttachOpenFileCommand { get; }
     [DataMember] public AsyncCommand RunNextTaskCommand { get; }
     [DataMember] public AsyncCommand ExportTasksCommand { get; }

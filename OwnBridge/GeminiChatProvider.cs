@@ -223,6 +223,15 @@ internal sealed class GeminiChatProvider : IChatProvider
         return Str(result, "sessionId") ?? throw new InvalidOperationException("Gemini did not create a session.");
     }
 
+    // ACP content blocks: the text, then each image as base64 with its MIME type.
+    private static List<object> BuildPromptBlocks(ChatTurnRequest request)
+    {
+        var blocks = new List<object> { new { type = "text", text = request.BuildPrompt() } };
+        foreach (var image in request.ImagePaths)
+            blocks.Add(new { type = "image", mimeType = ChatFiles.MimeType(image), data = Convert.ToBase64String(File.ReadAllBytes(image)) });
+        return blocks;
+    }
+
     public async Task<string> SendAsync(ConversationSession session, ChatTurnRequest request,
         IChatTurnObserver observer, CancellationToken cancellationToken)
     {
@@ -299,7 +308,7 @@ internal sealed class GeminiChatProvider : IChatProvider
             var result = await client.RequestAsync("session/prompt", new
             {
                 sessionId,
-                prompt = new[] { new { type = "text", text = request.BuildPrompt() } },
+                prompt = BuildPromptBlocks(request),
             }, cancellationToken).WaitAsync(TimeSpan.FromMinutes(30), cancellationToken);
 
             RecordUsage(sessionId, result);

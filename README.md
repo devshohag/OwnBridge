@@ -4,6 +4,31 @@
 
 OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client (`codex app-server`) and the official Gemini CLI (ACP mode) locally, so users work with their own ChatGPT and Google accounts. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
+## 0.8.6
+
+- 📎 in chat picks several files at once (Ctrl or Shift + click in the dialog), up to 10 per message.
+
+## 0.8.5
+
+- **Approval modes** (Settings, and the "Approvals: …" link next to Send): *Ask every time*; *Auto-approve reading*; *Auto-approve reading, file edits inside this solution, and builds/tests* (recommended); *Full auto* (also other commands). In every mode, deleting files and risky commands (git push/reset, rm, redirection, chained commands) still ask. Auto-approved steps are listed in the reply, and auto-approved edits are committed with their task like approved ones. The old "approve read-only commands" setting carries over as *Auto-approve reading*.
+- Read-only pipelines such as `Get-Content file | Select-Object -Skip 100 -First 50` and `git log | Select-Object -First 5` count as reading. Commands Codex wraps in single quotes (`-Command 'rg …'`) are recognised.
+
+## 0.8.4
+
+- **PDF files** in chat (📎) and in Tasks. OwnBridge reads the text itself (no extra libraries): Flate, ASCII85 and ASCIIHex streams, compressed object streams, standard fonts and embedded fonts with a ToUnicode map (Word, browsers, ReportLab, LibreOffice). A scanned PDF has no text; OwnBridge says so and suggests Paste image for single pages. Progress for a PDF plan is kept in OwnBridge (a PDF is not written to).
+- Plan headings must look like headings: "Phase 22 — …", "Step 3: …", "Task 4." A sentence such as "Phase 18 shipped two entities" no longer becomes a task.
+- The text before the first task in a plan (goals, rules) is sent with every task as general notes.
+
+## 0.8.3
+
+- **Tasks write back to the file.** A finished task gets `[DONE]` on its plan heading (a `[PARTIAL]` marker is replaced), or `Done` in the Excel/CSV status column ("Dev Status", else "Status"). The file is committed together with the task's changes. Formatting and other sheets in the workbook are kept. If the workbook is open in Excel, OwnBridge says so and you can press Mark done again after closing it.
+- **Task progress belongs to the solution**, not to one chat: New chat, History and restarts keep it. Attaching the same file again keeps what was done. Lists saved by older versions are moved over automatically.
+- **Mark done / Not done** on every task, for work finished outside the task runner or a task that must be redone.
+- **Browse…** in Tasks opens the Windows file picker; pasting a path still works.
+- **Attach files and images in chat.** 📎 picks a file (code, logs, JSON, Excel, CSV, Word, Markdown, images). **Paste image** sends a screenshot from the clipboard (Win + Shift + S), for example an error dialog. ChatGPT and Gemini receive images as pictures; other files are sent as text (up to 60,000 characters each).
+- The chat shows when it started and when the last message was, so an older chat is easy to recognise.
+- Long runs of steps collapse into one line ("9 commands · 2 files edited — Show details"). "Approval requested" lines are no longer listed, and commands are shown without the `powershell.exe -Command` wrapper.
+
 ## 0.8.2
 
 - The open solution is read from Visual Studio, so OwnBridge knows the workspace even when no file is open in the editor. The context line shows the solution as soon as the panel opens.

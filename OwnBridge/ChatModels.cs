@@ -11,12 +11,32 @@ internal sealed class MessageItem : NotifyPropertyChangedObject
     private string streamText = string.Empty;
     private bool isStreaming;
 
+    private const int CompactAfter = 4;
+    private bool showDetails;
+    private bool hasManyActivities;
+    private bool showActivities = true;
+    private string activitySummary = string.Empty;
+    private int commands, edits, notes, others;
+
     public MessageItem(bool isUser, string speaker)
     {
         IsUser = isUser;
         IsAssistant = !isUser;
         Speaker = speaker;
+        ToggleDetailsCommand = new AsyncCommand((_, _) =>
+        {
+            ShowDetails = !showDetails;
+            UpdateSummary();
+            return Task.CompletedTask;
+        });
     }
+
+    // Many steps collapse into one line ("9 commands · 2 files edited · Show details").
+    [DataMember] public bool HasManyActivities { get => hasManyActivities; private set => SetProperty(ref hasManyActivities, value); }
+    [DataMember] public bool ShowActivities { get => showActivities; private set => SetProperty(ref showActivities, value); }
+    [DataMember] public bool ShowDetails { get => showDetails; private set => SetProperty(ref showDetails, value); }
+    [DataMember] public string ActivitySummary { get => activitySummary; private set => SetProperty(ref activitySummary, value); }
+    [DataMember] public AsyncCommand ToggleDetailsCommand { get; private set; }
 
     [DataMember] public bool IsUser { get; private set; }
     [DataMember] public bool IsAssistant { get; private set; }
@@ -30,7 +50,32 @@ internal sealed class MessageItem : NotifyPropertyChangedObject
     [DataMember]
     public bool IsStreaming { get => isStreaming; set => SetProperty(ref isStreaming, value); }
 
-    public void AddActivity(string line) => Activities.Add(ActivityItem.From(line));
+    public void AddActivity(string line)
+    {
+        var clean = ActivityItem.Clean(line);
+        if (clean is null) return;
+        var item = ActivityItem.From(clean);
+        Activities.Add(item);
+        if (item.IsNote) notes++;
+        else if (clean.StartsWith("Command", StringComparison.OrdinalIgnoreCase) ||
+                 clean.StartsWith("Auto-approved", StringComparison.OrdinalIgnoreCase)) commands++;
+        else if (clean.StartsWith("Edited", StringComparison.OrdinalIgnoreCase)) edits++;
+        else others++;
+        UpdateSummary();
+    }
+
+    private void UpdateSummary()
+    {
+        var many = Activities.Count > CompactAfter;
+        HasManyActivities = many;
+        ShowActivities = !many || showDetails;
+        var parts = new List<string>();
+        if (commands > 0) parts.Add($"{commands} command{(commands == 1 ? "" : "s")}");
+        if (edits > 0) parts.Add($"{edits} file{(edits == 1 ? "" : "s")} edited");
+        if (others > 0) parts.Add($"{others} other step{(others == 1 ? "" : "s")}");
+        if (notes > 0) parts.Add($"{notes} note{(notes == 1 ? "" : "s")}");
+        ActivitySummary = $"{string.Join(" · ", parts)}  —  {(showDetails ? "Hide details" : "Show details")}";
+    }
 
     // Stored assistant text = activity lines ("• ...") first, then the answer.
     public static MessageItem FromStored(ConversationMessage message)
@@ -139,6 +184,21 @@ internal sealed class ActivityItem
     [DataMember] public string Text { get; private set; }
     [DataMember] public bool IsNote { get; private set; }
 
+    private static readonly System.Text.RegularExpressions.Regex ShellWrapper = new(
+        @"""?[A-Za-z]:\\[^""]*?(powershell|pwsh|cmd)(\.exe)?""?\s+(-NoProfile\s+)?(-Command|/c|/d /s /c)\s+",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // Shortens an activity line for display: drops "Approval requested" noise (the card already asked),
+    // removes the powershell.exe wrapper and doubled backslashes, and caps the length.
+    public static string? Clean(string line)
+    {
+        var text = line.Trim();
+        if (text.StartsWith("Approval requested", StringComparison.OrdinalIgnoreCase)) return null;
+        text = text.Replace("\\\\", "\\");
+        text = ShellWrapper.Replace(text, string.Empty);
+        return text.Length > 180 ? text[..180] + "…" : text;
+    }
+
     public static ActivityItem From(string line)
     {
         if (line.StartsWith("Note: ", StringComparison.Ordinal)) return new ActivityItem("", line[6..], true);
@@ -191,14 +251,33 @@ internal sealed class ConversationItem
 [DataContract]
 internal sealed class TaskRow
 {
-    public TaskRow(string line, AsyncCommand runCommand, AsyncCommand skipCommand)
+    public TaskRow(string line, AsyncCommand runCommand, AsyncCommand skipCommand, string markLabel, AsyncCommand markCommand)
     {
         Line = line;
         RunCommand = runCommand;
         SkipCommand = skipCommand;
+        MarkLabel = markLabel;
+        MarkCommand = markCommand;
     }
 
     [DataMember] public string Line { get; private set; }
     [DataMember] public AsyncCommand RunCommand { get; private set; }
     [DataMember] public AsyncCommand SkipCommand { get; private set; }
+    // "Mark done" or "Not done": for work finished outside the task runner, or a task that must be redone.
+    [DataMember] public string MarkLabel { get; private set; }
+    [DataMember] public AsyncCommand MarkCommand { get; private set; }
+}
+
+// A file waiting to be sent with the next message.
+[DataContract]
+internal sealed class AttachmentChip
+{
+    public AttachmentChip(string label, AsyncCommand removeCommand)
+    {
+        Label = label;
+        RemoveCommand = removeCommand;
+    }
+
+    [DataMember] public string Label { get; private set; }
+    [DataMember] public AsyncCommand RemoveCommand { get; private set; }
 }

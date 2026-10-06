@@ -211,6 +211,25 @@ internal sealed class Workspace
 
     public string ConversationsFolder => Path.Combine(Folder, "conversations");
 
+    public string TasksFolder
+    {
+        get
+        {
+            var folder = Path.Combine(Folder, "tasks");
+            Directory.CreateDirectory(folder);
+            return folder;
+        }
+    }
+
+    public string ActivePlanPointer => Path.Combine(TasksFolder, "active.txt");
+
+    public string PlanStatePath(string sourceFile)
+    {
+        var key = Path.GetFullPath(sourceFile).ToLowerInvariant();
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
+        return Path.Combine(TasksFolder, hash + ".json");
+    }
+
     public bool IsGeneral => SolutionLocator.IsGeneral(Root);
 
     public string DisplayName => IsGeneral ? "General chat — no solution open"

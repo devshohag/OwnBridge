@@ -33,7 +33,9 @@ internal sealed class ProtocolLog
             {
                 var info = new FileInfo(FilePath);
                 if (info.Exists && info.Length > MaxBytes) return;
-                File.AppendAllText(FilePath, $"{DateTime.Now:HH:mm:ss.fff} {direction} {line}\n");
+                // Long lines (for example images sent as base64) are cut so the log stays readable.
+                var text = line.Length > 4000 ? line[..4000] + $" [... {line.Length - 4000} more characters]" : line;
+                File.AppendAllText(FilePath, $"{DateTime.Now:HH:mm:ss.fff} {direction} {text}\n");
             }
         }
         catch (IOException) { }

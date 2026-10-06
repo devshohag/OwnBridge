@@ -27,13 +27,18 @@ internal interface IChatProvider : IDisposable
 internal sealed record ProviderInfo(string Account, string Usage);
 
 // What the user asked, the Visual Studio context, and (after a switch) what happened earlier.
-internal sealed record ChatTurnRequest(string UserText, string WorkspaceRoot, EditorContext? Editor, string? Handoff)
+// AttachedText holds files the user attached to this message; Images are image files the engine sends as pictures.
+internal sealed record ChatTurnRequest(string UserText, string WorkspaceRoot, EditorContext? Editor, string? Handoff,
+    string? AttachedText = null, IReadOnlyList<string>? Images = null)
 {
+    public IReadOnlyList<string> ImagePaths => Images ?? Array.Empty<string>();
+
     public string BuildPrompt()
     {
         var parts = new List<string>();
         if (Handoff is not null) parts.Add(Handoff);
         if (Editor is not null) parts.Add(Editor.ToPromptBlock(WorkspaceRoot));
+        if (AttachedText is not null) parts.Add(AttachedText);
         parts.Add(parts.Count == 0 ? UserText : $"User request:\n{UserText}");
         return string.Join("\n\n", parts);
     }

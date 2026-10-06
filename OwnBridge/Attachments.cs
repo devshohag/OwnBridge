@@ -10,6 +10,8 @@ internal sealed class Attachment
     public required string FilePath { get; init; }
     public List<string> Headers { get; init; } = new();
     public List<List<string>> Rows { get; init; } = new();
+    // Where each row lives in the file (Excel row number, or CSV record index), so status can be written back.
+    public List<int> RowNumbers { get; init; } = new();
     public string Text { get; init; } = string.Empty;
     public bool IsTable => Headers.Count > 0;
 
@@ -25,19 +27,57 @@ internal sealed class Attachment
             ".csv" => ReadCsv(path),
             ".docx" => new Attachment { FilePath = path, Text = WordReader.ReadAsMarkdown(path) },
             ".md" or ".txt" or ".markdown" => new Attachment { FilePath = path, Text = File.ReadAllText(path) },
-            _ => throw new NotSupportedException($"{extension} files are not supported yet. Use .xlsx, .csv, .docx, .md or .txt."),
+            ".pdf" => new Attachment { FilePath = path, Text = ReadPdf(path) },
+            _ => throw new NotSupportedException($"{extension} files are not supported yet. Use .xlsx, .csv, .docx, .pdf, .md or .txt."),
         };
+    }
+
+    private static string ReadPdf(string path)
+    {
+        string text;
+        try { text = PdfText.Extract(path); }
+        catch (Exception ex) when (ex is not FileNotFoundException) { text = string.Empty; }
+        if (!PdfText.LooksReadable(text))
+            throw new InvalidDataException($"No readable text in {Path.GetFileName(path)}. It may be a scanned PDF (pictures of pages). " +
+                                           "Export it again as a text PDF, or send a page as a screenshot with Paste image.");
+        return text;
     }
 
     private static Attachment ReadCsv(string path)
     {
-        var records = ParseCsv(File.ReadAllText(path)).Where(r => r.Any(c => c.Length > 0)).ToList();
+        var records = ParseCsv(File.ReadAllText(path)).Select((r, i) => (Row: r, Index: i))
+            .Where(r => r.Row.Any(c => c.Length > 0)).ToList();
         if (records.Count == 0) return new Attachment { FilePath = path };
-        return new Attachment { FilePath = path, Headers = records[0], Rows = records.Skip(1).ToList() };
+        return new Attachment
+        {
+            FilePath = path,
+            Headers = records[0].Row,
+            Rows = records.Skip(1).Select(r => r.Row).ToList(),
+            RowNumbers = records.Skip(1).Select(r => r.Index).ToList(),
+        };
     }
 
+    // Sets one CSV cell (record index, column) and writes the file back, keeping a UTF-8 BOM if it had one.
+    public static void SetCsvCell(string path, int recordIndex, int column, string value)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var bom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+        var records = ParseCsv(File.ReadAllText(path)).ToList();
+        if (recordIndex < 0 || recordIndex >= records.Count) throw new InvalidDataException("That row is no longer in the file.");
+        var row = records[recordIndex];
+        while (row.Count <= column) row.Add(string.Empty);
+        row[column] = value;
+        var text = new StringBuilder();
+        foreach (var record in records)
+            text.Append(string.Join(",", record.Select(Quote))).Append("\r\n");
+        File.WriteAllText(path, text.ToString(), new UTF8Encoding(bom));
+    }
+
+    private static string Quote(string cell) =>
+        cell.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0 ? "\"" + cell.Replace("\"", "\"\"") + "\"" : cell;
+
     // RFC 4180 style: quotes, doubled quotes, commas and newlines inside quotes.
-    private static IEnumerable<List<string>> ParseCsv(string text)
+    public static IEnumerable<List<string>> ParseCsv(string text)
     {
         var row = new List<string>();
         var cell = new StringBuilder();
@@ -88,10 +128,12 @@ internal static class Spreadsheet
 
         var sheetEntry = FirstSheetEntry(zip) ?? throw new InvalidDataException("The workbook has no worksheet.");
         var grid = new List<List<string>>();
+        var numbers = new List<int>();
         using (var s = sheetEntry.Open())
         {
             foreach (var row in XDocument.Load(s).Descendants(Main + "row"))
             {
+                numbers.Add((int?)row.Attribute("r") ?? numbers.Count + 1);
                 var values = new List<string>();
                 foreach (var cell in row.Elements(Main + "c"))
                 {
@@ -103,10 +145,53 @@ internal static class Spreadsheet
             }
         }
 
-        grid = grid.Where(r => r.Any(c => c.Length > 0)).ToList();
-        if (grid.Count == 0) return new Attachment { FilePath = path };
-        var headers = grid[0].Select((h, i) => h.Length > 0 ? h : $"Column {i + 1}").ToList();
-        return new Attachment { FilePath = path, Headers = headers, Rows = grid.Skip(1).ToList() };
+        var kept = grid.Select((r, i) => (Row: r, Number: numbers[i])).Where(r => r.Row.Any(c => c.Length > 0)).ToList();
+        if (kept.Count == 0) return new Attachment { FilePath = path };
+        var headers = kept[0].Row.Select((h, i) => h.Length > 0 ? h : $"Column {i + 1}").ToList();
+        return new Attachment
+        {
+            FilePath = path,
+            Headers = headers,
+            Rows = kept.Skip(1).Select(r => r.Row).ToList(),
+            RowNumbers = kept.Skip(1).Select(r => r.Number).ToList(),
+        };
+    }
+
+    // Writes one text cell into the first worksheet of an existing workbook, keeping everything else
+    // (formatting, other sheets, formulas). Fails with IOException while the file is open in Excel.
+    public static void SetCell(string path, int rowNumber, int column, string value)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Update);
+        var entry = FirstSheetEntry(zip) ?? throw new InvalidDataException("The workbook has no worksheet.");
+        var name = entry.FullName;
+        XDocument document;
+        using (var s = entry.Open()) document = XDocument.Load(s);
+
+        var rows = document.Descendants(Main + "row").ToList();
+        XElement? row = null;
+        for (var i = 0; i < rows.Count; i++)
+            if (((int?)rows[i].Attribute("r") ?? i + 1) == rowNumber) { row = rows[i]; break; }
+        if (row is null) throw new InvalidDataException($"Row {rowNumber} is no longer in the sheet.");
+
+        var reference = $"{ColumnName(column)}{rowNumber}";
+        var cell = row.Elements(Main + "c").FirstOrDefault(c => string.Equals((string?)c.Attribute("r"), reference, StringComparison.OrdinalIgnoreCase));
+        if (cell is null)
+        {
+            cell = new XElement(Main + "c", new XAttribute("r", reference));
+            var after = row.Elements(Main + "c").FirstOrDefault(c => (ColumnIndex((string?)c.Attribute("r")) ?? -1) > column);
+            if (after is not null) after.AddBeforeSelf(cell);
+            else row.Add(cell);
+        }
+        cell.Attribute("t")?.Remove();
+        cell.Elements().Remove();
+        cell.SetAttributeValue("t", "inlineStr");
+        cell.Add(new XElement(Main + "is", new XElement(Main + "t", Clean(value))));
+
+        entry.Delete();
+        var replacement = zip.CreateEntry(name, CompressionLevel.Optimal);
+        using var output = replacement.Open();
+        document.Save(output, SaveOptions.DisableFormatting);
     }
 
     private static ZipArchiveEntry? FirstSheetEntry(ZipArchive zip)

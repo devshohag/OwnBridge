@@ -347,10 +347,13 @@ internal sealed class CodexChatProvider : IChatProvider
         client.ServerRequestHandler = OnServerRequest;
         try
         {
+            // Images (screenshots, error pictures) go as local image inputs next to the text.
+            var input = new List<object> { new { type = "text", text = prompt } };
+            foreach (var image in request.ImagePaths) input.Add(new { type = "localImage", path = image });
             var turnStart = await client.RequestAsync("turn/start", new
             {
                 threadId,
-                input = new[] { new { type = "text", text = prompt } },
+                input,
             }, cancellationToken);
             currentThreadId = threadId;
             currentTurnId = turnStart.TryGetProperty("turn", out var t) ? Str(t, "id") : null;

@@ -34,7 +34,10 @@ internal static class CommandSafety
         if (inner.Length == 0) return (CommandKind.Run, "Runs a command");
         switch (Scan(inner))
         {
-            case ScanResult.Operators: return (CommandKind.Risky, "Runs several commands or redirects output");
+            case ScanResult.Operators:
+                // "Get-Content x | Select-Object -First 50" only reads: every part of the pipe is a reader or a filter.
+                if (IsReadPipeline(inner)) return (CommandKind.Read, "Reads files and filters the output; changes nothing");
+                return (CommandKind.Risky, "Runs several commands or redirects output");
             case ScanResult.Unclear: return (CommandKind.Run, "Runs a command (OwnBridge could not analyse it; check it yourself)");
         }
 
@@ -61,6 +64,58 @@ internal static class CommandSafety
         return (CommandKind.Run, $"Runs {program}");
     }
 
+    // Filters that only reshape text coming through a pipe. (Plain "sort" is left out: sort.exe /O writes a file.)
+    private static readonly HashSet<string> PipeFilters = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "select-object", "select", "sort-object", "measure-object", "measure", "format-table", "ft", "format-list", "fl",
+        "out-string", "where-object", "where", "?", "select-string", "sls", "findstr", "grep", "head", "tail", "wc", "uniq",
+        "get-unique", "group-object", "group",
+    };
+
+    // True when the only operator is a single "|" between readers and filters, with no script blocks,
+    // sub-expressions, redirection or chaining anywhere outside quotes.
+    private static bool IsReadPipeline(string text)
+    {
+        var segments = new List<string>();
+        var current = new StringBuilder();
+        char? quote = null;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (quote is not null)
+            {
+                if (c == quote) quote = null;
+                current.Append(c);
+                continue;
+            }
+            if (c is '"' or '\'') { quote = c; current.Append(c); continue; }
+            if (c is ';' or '&' or '>' or '<' or '`' or '\n' or '\r' or '{' or '}') return false;
+            if (c == '$' && i + 1 < text.Length && text[i + 1] == '(') return false;
+            if (c == '|')
+            {
+                if (i + 1 < text.Length && text[i + 1] == '|') return false;
+                segments.Add(current.ToString());
+                current.Clear();
+                continue;
+            }
+            current.Append(c);
+        }
+        if (quote is not null) return false;
+        segments.Add(current.ToString());
+        if (segments.Count < 2) return false;
+        for (var index = 0; index < segments.Count; index++)
+        {
+            var words = Split(segments[index].Trim());
+            if (words.Count == 0) return false;
+            var program = ProgramName(words[0]);
+            var ok = program == "git"
+                ? index == 0 && words.Count > 1 && ReadGitCommands.Contains(words[1])
+                : ReadPrograms.Contains(program) || (index > 0 && PipeFilters.Contains(program));
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     // Codex on Windows wraps commands as: "C:\...\powershell.exe" -Command "rg ...".
     private static string Unwrap(string command)
     {
@@ -80,6 +135,8 @@ internal static class CommandSafety
                     if (f is "-command" or "-c" or "/c") break;
                 }
                 var rest = string.Join(" ", words.Skip(index));
+                if (rest.Length >= 2 && rest[0] == '\'' && rest[^1] == '\'')
+                    return rest[1..^1].Replace("''", "'").Trim(); // PowerShell single quotes: '' is a literal '.
                 if (rest.Length >= 2 && rest[0] == '"' && rest[^1] == '"') rest = rest[1..^1];
                 return rest.Replace("\\\"", "\"").Trim();
             }
