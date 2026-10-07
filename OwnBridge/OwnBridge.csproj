@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>OwnBridge</RootNamespace>
-    <AssemblyVersion>0.8.6.0</AssemblyVersion>
+    <AssemblyVersion>0.8.8.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

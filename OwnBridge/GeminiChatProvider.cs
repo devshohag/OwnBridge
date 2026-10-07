@@ -252,6 +252,7 @@ internal sealed class GeminiChatProvider : IChatProvider
         }
 
         var answer = new StringBuilder();
+        var thoughts = new StringBuilder();
         var tools = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
         using var turnCancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -259,8 +260,18 @@ internal sealed class GeminiChatProvider : IChatProvider
         {
             if (method != "session/update" || Str(data, "sessionId") != sessionId) return;
             if (!data.TryGetProperty("update", out var update)) return;
+            observer.OnProgress(null);
             switch (Str(update, "sessionUpdate"))
             {
+                case "agent_thought_chunk":
+                    if (update.TryGetProperty("content", out var thoughtContent) && Str(thoughtContent, "text") is { } thought)
+                    {
+                        lock (thoughts) thoughts.Append(thought);
+                        string snapshotThought;
+                        lock (thoughts) snapshotThought = thoughts.ToString();
+                        observer.OnThinking(snapshotThought);
+                    }
+                    break;
                 case "agent_message_chunk":
                     if (update.TryGetProperty("content", out var content) && Str(content, "text") is { } text)
                     {

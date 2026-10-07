@@ -7,7 +7,7 @@ namespace OwnBridge;
 internal static class FileDialog
 {
     public const string PlanFilter = "Plans and issue lists (*.xlsx;*.csv;*.pdf;*.docx;*.md;*.txt)|*.xlsx;*.xlsm;*.csv;*.pdf;*.md;*.markdown;*.txt;*.docx|All files (*.*)|*.*";
-    public const string ChatFilter = "Images, documents and code|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.pdf;*.xlsx;*.xlsm;*.csv;*.md;*.txt;*.docx;*.json;*.xml;*.log;*.cs;*.cshtml;*.razor;*.js;*.ts;*.css;*.html;*.sql;*.config;*.yml;*.yaml|Images (*.png;*.jpg;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.gif;*.webp|All files (*.*)|*.*";
+    public const string ChatFilter = "Images, documents, code and zip|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.pdf;*.zip;*.xlsx;*.xlsm;*.csv;*.md;*.txt;*.docx;*.json;*.xml;*.log;*.cs;*.cshtml;*.razor;*.js;*.ts;*.css;*.html;*.sql;*.config;*.yml;*.yaml|Images (*.png;*.jpg;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.gif;*.webp|All files (*.*)|*.*";
 
     public static async Task<string?> PickFileAsync(string title, string filter, string? initialFolder) =>
         (await PickFilesAsync(title, filter, initialFolder, multiple: false)).FirstOrDefault();

@@ -69,6 +69,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         gemini.Progress = update => Status = update;
         _ = DetectSolutionAsync();
         SetApprovalMode(approvalMode is "ask" or "reads" or "edits" or "auto" ? approvalMode : "ask");
+        SetEffort(effort is "low" or "medium" or "high" ? effort : string.Empty, announce: false);
 
         ConnectCommand = new AsyncCommand(async (_, cancellationToken) =>
         {
@@ -415,7 +416,7 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         {
             var attached = files ?? Array.Empty<ChatFile>();
             var request = new ChatTurnRequest(engineText, root, editor, handoff,
-                ChatFiles.BuildTextBlock(attached),
+                ChatFiles.BuildTextBlock(attached, root, !current.Workspace.IsGeneral),
                 attached.Where(f => f.IsImage).Select(f => f.Path).ToList());
             var answer = await provider.SendAsync(current, request, view, turnCancel.Token);
             current.Add("assistant", provider.ProviderId, view.WithActivity(answer));
@@ -561,7 +562,9 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
             return Task.CompletedTask;
         })));
         HasPendingFiles = true;
-        Status = file.IsImage ? $"{file.Name} will be sent with your message." : $"{file.Name} will be sent with your message (as text).";
+        Status = file.IsImage ? $"{file.Name} will be sent with your message."
+            : ZipAttachment.IsZip(path) ? $"{file.Name} will be unpacked for the AI when you send (bin/obj/.git are skipped)."
+            : $"{file.Name} will be sent with your message (as text).";
     }
 
     private void ClearPendingFiles()
@@ -931,6 +934,8 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         private readonly StringBuilder activity = new();
         private readonly Timer silenceTimer;
         private DateTime lastEvent = DateTime.UtcNow;
+        private readonly DateTime started = DateTime.UtcNow;
+        private volatile bool answerStarted;
         private volatile bool waitingForUser;
 
         public TurnView(ChatPanelData owner, string speaker)
@@ -945,13 +950,32 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
         private void CheckSilence()
         {
             if (waitingForUser) return;
-            var seconds = (int)(DateTime.UtcNow - lastEvent).TotalSeconds;
-            if (seconds >= 20)
-                owner.Status = $"Still waiting for {speaker} ({seconds}s). The AI service may be busy or retrying; Stop cancels.";
+            var silent = (int)(DateTime.UtcNow - lastEvent).TotalSeconds;
+            var total = (int)(DateTime.UtcNow - started).TotalSeconds;
+            // Only real silence is reported; thinking and commands keep the engine "alive".
+            if (silent >= 30)
+                owner.Status = $"No events from {speaker} for {silent}s (working {total}s). The AI service may be slow right now; Stop cancels.";
+        }
+
+        public void OnProgress(string? status)
+        {
+            lastEvent = DateTime.UtcNow;
+            if (status is not null) owner.Status = status;
+        }
+
+        // Last part of the reasoning summary, shown until the real answer starts streaming.
+        public void OnThinking(string text)
+        {
+            lastEvent = DateTime.UtcNow;
+            if (answerStarted) return;
+            var clean = text.ReplaceLineEndings(" ").Trim();
+            if (clean.Length > 220) clean = "…" + clean[^220..];
+            live.StreamText = "Thinking: " + clean;
         }
 
         public void OnPartialAnswer(string text)
         {
+            answerStarted = true;
             lastEvent = DateTime.UtcNow;
             live.StreamText = text;
         }
@@ -1040,6 +1064,33 @@ internal sealed class ChatPanelData : NotifyPropertyChangedObject, IDisposable
     [DataMember] public string EarlierText { get => earlierText; private set => SetProperty(ref earlierText, value); }
     [DataMember] public bool ShowAllMessages { get => showAllMessages; private set => SetProperty(ref showAllMessages, value); }
     [DataMember] public bool HasCommand { get => hasCommand; private set => SetProperty(ref hasCommand, value); }
+
+    // ChatGPT reasoning effort: "low" (fast), "medium", "high" (deep), or empty = the engine's own default.
+    private string effort = Settings.Get("chatgptEffort") ?? string.Empty;
+    private bool speedDefault, speedFast, speedBalanced, speedDeep;
+    [DataMember] public bool SpeedDefault { get => speedDefault; set { SetProperty(ref speedDefault, value); if (value) SetEffort(string.Empty); } }
+    [DataMember] public bool SpeedFast { get => speedFast; set { SetProperty(ref speedFast, value); if (value) SetEffort("low"); } }
+    [DataMember] public bool SpeedBalanced { get => speedBalanced; set { SetProperty(ref speedBalanced, value); if (value) SetEffort("medium"); } }
+    [DataMember] public bool SpeedDeep { get => speedDeep; set { SetProperty(ref speedDeep, value); if (value) SetEffort("high"); } }
+
+    private void SetEffort(string value, bool announce = true)
+    {
+        var changed = effort != value;
+        effort = value;
+        Settings.Set("chatgptEffort", value);
+        SetProperty(ref speedDefault, value.Length == 0, nameof(SpeedDefault));
+        SetProperty(ref speedFast, value == "low", nameof(SpeedFast));
+        SetProperty(ref speedBalanced, value == "medium", nameof(SpeedBalanced));
+        SetProperty(ref speedDeep, value == "high", nameof(SpeedDeep));
+        if (!announce || !changed) return;
+        Status = value switch
+        {
+            "low" => "ChatGPT speed: Fast. Replies come sooner with less thinking; good for small questions and edits.",
+            "medium" => "ChatGPT speed: Balanced.",
+            "high" => "ChatGPT speed: Deep. Slower, more careful; for hard bugs and big tasks.",
+            _ => "ChatGPT speed: engine default.",
+        };
+    }
 
     private bool modeAsk, modeReads, modeEdits, modeAuto;
     private string approvalModeText = "Approvals: ask";

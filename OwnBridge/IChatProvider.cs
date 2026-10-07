@@ -51,6 +51,10 @@ internal interface IChatTurnObserver
     void OnActivity(string line);
     // Short progress notes the AI writes while working ("I'll search for ..."); shown so approvals make sense.
     void OnCommentary(string text);
+    // The engine is alive and working (any event for this turn). status, when given, is shown on the status line.
+    void OnProgress(string? status);
+    // The model's reasoning summary while it thinks, shown in the reply bubble until the answer starts.
+    void OnThinking(string text);
     Task<bool> RequestApprovalAsync(ApprovalRequest request, CancellationToken cancellationToken);
 }
 

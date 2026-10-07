@@ -4,6 +4,18 @@
 
 OwnBridge is a free, open-source Visual Studio 2022 extension. It runs the official Codex client (`codex app-server`) and the official Gemini CLI (ACP mode) locally, so users work with their own ChatGPT and Google accounts. There is no relay server, no API key, and OwnBridge never reads or stores account tokens.
 
+## 0.8.8
+
+- **No more silent waits.** While the model thinks, its reasoning summary shows in the reply ("Thinking: …") and the status line says what it is doing (thinking, running a command, preparing a file change). When OpenAI's stream drops and Codex retries, the status says so plainly. The "no events" warning now appears only after 30 s of real silence and shows the total time.
+- **ChatGPT speed** in Settings: Fast / Balanced / Deep / Engine default (reasoning effort for the next messages). Engines that do not support it are detected once and it is no longer sent.
+- ChatGPT traffic is logged with time stamps to `%LOCALAPPDATA%\OwnBridge\logs\chatgpt.log` (long lines shortened), so slow replies can be traced.
+- A non-JSON line from the engine no longer stops the reader (it could make every following request hang).
+- Gemini shows its thoughts the same way.
+
+## 0.8.7
+
+- **.zip files in chat.** The archive is unpacked to `<solution>\.ownbridge\attachments\<name>-<id>\` (or the general-chat folder), and the AI gets the file list plus the contents of the smaller text files; it opens the rest itself. `bin`, `obj`, `node_modules` and `.git` inside the archive are skipped, entries that try to escape the folder (`../`) are refused, and limits are 100 MB zipped / 300 MB unpacked / 3,000 files. `.ownbridge/` is added to `.git\info\exclude` (local, never committed), and SDK projects ignore dot-folders, so unpacked code is neither committed nor compiled. The same zip is unpacked only once.
+
 ## 0.8.6
 
 - 📎 in chat picks several files at once (Ctrl or Shift + click in the dialog), up to 10 per message.

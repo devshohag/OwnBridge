@@ -11,6 +11,7 @@ internal sealed class CodexChatProvider : IChatProvider
     private readonly ConcurrentDictionary<string, long> threadTokens = new(StringComparer.Ordinal);
     private JsonElement lastRateLimits;
     private string? model = Settings.Get("chatgptModel");
+    private bool effortUnsupported;
     private IReadOnlyList<string>? models;
 
     public string CurrentModel => model ?? "default";
@@ -248,12 +249,32 @@ internal sealed class CodexChatProvider : IChatProvider
         using var turnCancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         string answer = string.Empty;
         string? lastCommentary = null;
+        var reasoning = new StringBuilder();
 
         void OnNotification(string method, JsonElement data)
         {
             if (data.ValueKind != JsonValueKind.Object) return;
             if (data.TryGetProperty("threadId", out var notificationThread) &&
                 notificationThread.GetString() != threadId) return;
+            observer.OnProgress(null); // Any event for this thread means the engine is working.
+
+            if (method is "item/reasoning/summaryTextDelta" or "item/reasoning/textDelta" &&
+                data.TryGetProperty("delta", out var thought) && thought.ValueKind == JsonValueKind.String)
+            {
+                reasoning.Append(thought.GetString());
+                observer.OnThinking(reasoning.ToString());
+                return;
+            }
+            if (method == "error")
+            {
+                // OpenAI's stream dropped; Codex retries by itself ("Reconnecting... 2/5").
+                var problem = data.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.Object ? Str(e, "message") : Str(data, "message");
+                var retrying = data.TryGetProperty("willRetry", out var w) && w.ValueKind == JsonValueKind.True;
+                observer.OnProgress(retrying
+                    ? $"The OpenAI service connection dropped; Codex is retrying ({problem ?? "reconnecting"}). This is on OpenAI's side."
+                    : $"ChatGPT reported a problem: {problem}");
+                return;
+            }
 
             if (method == "item/started" && data.TryGetProperty("item", out var started))
             {
@@ -261,6 +282,9 @@ internal sealed class CodexChatProvider : IChatProvider
                 var type = Str(started, "type");
                 if (id is null) return;
                 items[id] = started;
+                if (type == "reasoning") { reasoning.Clear(); observer.OnProgress("ChatGPT is thinking..."); }
+                else if (type == "commandExecution") observer.OnProgress($"Running: {ActivityItem.Clean(CommandText(started)) ?? "a command"}");
+                else if (type == "fileChange") observer.OnProgress("Preparing a file change...");
                 if (type == "agentMessage")
                 {
                     if (Str(started, "phase") == "commentary") ignored.Add(id);
@@ -350,11 +374,28 @@ internal sealed class CodexChatProvider : IChatProvider
             // Images (screenshots, error pictures) go as local image inputs next to the text.
             var input = new List<object> { new { type = "text", text = prompt } };
             foreach (var image in request.ImagePaths) input.Add(new { type = "localImage", path = image });
-            var turnStart = await client.RequestAsync("turn/start", new
+            // Reasoning effort (Settings → Speed): less thinking answers sooner. Older engines without the
+            // field reject it once; after that it is not sent again.
+            var effort = Settings.Get("chatgptEffort");
+            JsonElement turnStart;
+            if (effort is "low" or "medium" or "high" && !effortUnsupported)
             {
-                threadId,
-                input,
-            }, cancellationToken);
+                try
+                {
+                    turnStart = await client.RequestAsync("turn/start", new { threadId, input, effort }, cancellationToken);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("effort", StringComparison.OrdinalIgnoreCase) ||
+                                                           ex.Message.Contains("unknown field", StringComparison.OrdinalIgnoreCase) ||
+                                                           ex.Message.Contains("invalid", StringComparison.OrdinalIgnoreCase))
+                {
+                    effortUnsupported = true;
+                    turnStart = await client.RequestAsync("turn/start", new { threadId, input }, cancellationToken);
+                }
+            }
+            else
+            {
+                turnStart = await client.RequestAsync("turn/start", new { threadId, input }, cancellationToken);
+            }
             currentThreadId = threadId;
             currentTurnId = turnStart.TryGetProperty("turn", out var t) ? Str(t, "id") : null;
 

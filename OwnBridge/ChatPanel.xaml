@@ -382,6 +382,20 @@
                       Text="{Binding ModelInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
           </DockPanel>
 
+          <StackPanel Visibility="{Binding IsChatGpt, Converter={StaticResource Vis}}" Margin="0,0,0,16">
+            <TextBlock Text="ChatGPT speed" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,6"
+                       Text="How long the model thinks before answering. Fast suits questions and small edits; Deep suits hard bugs. Applies from the next message." />
+            <RadioButton GroupName="OwnBridgeSpeed" Margin="0,0,0,3" IsChecked="{Binding SpeedFast, Mode=TwoWay}"
+                         Foreground="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" Content="Fast (less thinking)" />
+            <RadioButton GroupName="OwnBridgeSpeed" Margin="0,0,0,3" IsChecked="{Binding SpeedBalanced, Mode=TwoWay}"
+                         Foreground="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" Content="Balanced" />
+            <RadioButton GroupName="OwnBridgeSpeed" Margin="0,0,0,3" IsChecked="{Binding SpeedDeep, Mode=TwoWay}"
+                         Foreground="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" Content="Deep (slower, more careful)" />
+            <RadioButton GroupName="OwnBridgeSpeed" Margin="0,0,0,3" IsChecked="{Binding SpeedDefault, Mode=TwoWay}"
+                         Foreground="{DynamicResource {x:Static styles:VsBrushes.ToolWindowTextKey}}" Content="Engine default" />
+          </StackPanel>
+
           <StackPanel Visibility="{Binding IsGemini, Converter={StaticResource Vis}}" Margin="0,0,0,16">
             <TextBlock Text="Gemini API key" FontWeight="SemiBold" Margin="0,0,0,4" />
             <TextBlock Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,6"

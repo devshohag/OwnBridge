@@ -10,6 +10,8 @@ internal sealed class CodexAppServerClient : IDisposable
 {
     private readonly Func<CancellationToken, Task<string>> resolveExecutable;
     private readonly StderrTail stderr = new();
+    // %LOCALAPPDATA%\OwnBridge\logs\chatgpt.log: every message with a time stamp, for "why was it slow?".
+    private readonly ProtocolLog log = new("chatgpt");
     private readonly SemaphoreSlim startupGate = new(1, 1);
     private readonly SemaphoreSlim writeGate = new(1, 1);
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> pending = new();
@@ -57,7 +59,9 @@ internal sealed class CodexAppServerClient : IDisposable
                 throw new InvalidOperationException($"Could not start the ChatGPT engine at {executable}.", ex);
             }
 
+            log.Reset();
             _ = ReadMessagesAsync(process);
+            stderr.Log = log;
             stderr.Start(process); // Drains diagnostics and keeps the last lines for error messages.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
@@ -65,7 +69,7 @@ internal sealed class CodexAppServerClient : IDisposable
             {
                 await RequestRawAsync("initialize", new
                 {
-                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.8.6" },
+                    clientInfo = new { name = "ownbridge", title = "OwnBridge", version = "0.8.8" },
                 }, timeout.Token);
                 await WriteAsync(new { method = "initialized", @params = new { } }, timeout.Token);
                 initialized = true;
@@ -119,7 +123,9 @@ internal sealed class CodexAppServerClient : IDisposable
         {
             if (process is null || process.HasExited)
                 throw new InvalidOperationException("The local AI client is not running. Reopen OwnBridge.");
-            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), cancellationToken);
+            var json = JsonSerializer.Serialize(message);
+            log.Write(">>", json);
+            await process.StandardInput.WriteLineAsync(json.AsMemory(), cancellationToken);
             await process.StandardInput.FlushAsync(cancellationToken);
         }
         finally
@@ -135,7 +141,14 @@ internal sealed class CodexAppServerClient : IDisposable
             string? line;
             while ((line = await running.StandardOutput.ReadLineAsync()) is not null)
             {
-                using var document = JsonDocument.Parse(line);
+                log.Write("<<", line);
+                JsonDocument document;
+                try { document = JsonDocument.Parse(line); }
+                catch (JsonException)
+                {
+                    continue; // A stray non-JSON line (a warning) must not stop the reader and hang every request.
+                }
+                using var _ = document;
                 var root = document.RootElement;
                 if (root.TryGetProperty("id", out var id) && root.TryGetProperty("method", out var requestMethod))
                 {

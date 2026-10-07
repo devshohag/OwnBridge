@@ -37,6 +37,7 @@ internal static class ChatFiles
         var info = new FileInfo(path);
         if (!info.Exists) return $"File not found: {path}";
         if (IsImage(path)) return info.Length > MaxImageBytes ? $"{info.Name} is larger than 10 MB." : null;
+        if (ZipAttachment.IsZip(path)) return ZipAttachment.Validate(info);
         if (info.Extension.Equals(".pdf", StringComparison.OrdinalIgnoreCase))
             return info.Length > MaxPdfBytes ? $"{info.Name} is larger than 30 MB." : null;
         if (info.Length > MaxTextFileBytes) return $"{info.Name} is larger than 5 MB; attach a smaller file or a part of it.";
@@ -56,7 +57,7 @@ internal static class ChatFiles
     }
 
     // The text files as one prompt block. Images are listed by name; the engines receive them separately.
-    public static string? BuildTextBlock(IReadOnlyList<ChatFile> files)
+    public static string? BuildTextBlock(IReadOnlyList<ChatFile> files, string workspaceRoot, bool insideSolution)
     {
         if (files.Count == 0) return null;
         var text = new StringBuilder();
@@ -65,6 +66,15 @@ internal static class ChatFiles
             if (file.IsImage)
             {
                 text.AppendLine($"Attached image: {file.Name} (look at it; for an error screenshot, find the cause in this solution).");
+                continue;
+            }
+            if (ZipAttachment.IsZip(file.Path))
+            {
+                try { text.AppendLine(ZipAttachment.Describe(file.Path, workspaceRoot, insideSolution)); }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+                {
+                    text.AppendLine($"Attached archive: {file.Name} — could not be unpacked ({ex.Message}).");
+                }
                 continue;
             }
             text.AppendLine($"Attached file: {file.Name} ({file.Path})");
